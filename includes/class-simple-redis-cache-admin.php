@@ -12,13 +12,22 @@ final class Simple_Redis_Cache_Admin {
 	private const NOTICE_KEY   = '_simple_redis_cache_notices';
 	private const PURGE_ACTION = 'simple_redis_cache_purge';
 	private const TEST_ACTION  = 'simple_redis_cache_test_redis';
+	private const WARM_PREPARE_ACTION = 'simple_redis_cache_prepare_warm';
+	private const WARM_URL_ACTION     = 'simple_redis_cache_warm_url';
+	private const WARM_NONCE          = 'simple_redis_cache_warm';
+	private const DEFAULT_TAB  = 'redis';
+	private const SETTINGS_TAB = '_settings_tab';
+	private const FORM_TABS    = array( 'redis', 'object', 'page' );
 
 	public static function init(): void {
 		add_action( 'admin_menu', array( self::class, 'admin_menu' ) );
 		add_action( 'admin_init', array( self::class, 'register_settings' ) );
 		add_action( 'admin_notices', array( self::class, 'admin_notices' ) );
+		add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		add_action( 'admin_post_' . self::TEST_ACTION, array( self::class, 'handle_test' ) );
 		add_action( 'admin_post_' . self::PURGE_ACTION, array( self::class, 'handle_purge' ) );
+		add_action( 'wp_ajax_' . self::WARM_PREPARE_ACTION, array( self::class, 'ajax_prepare_warm' ) );
+		add_action( 'wp_ajax_' . self::WARM_URL_ACTION, array( self::class, 'ajax_warm_url' ) );
 		add_action( 'admin_bar_menu', array( self::class, 'admin_bar' ), 100 );
 		add_filter( 'plugin_action_links_' . SIMPLE_REDIS_CACHE_BASENAME, array( self::class, 'plugin_action_links' ) );
 	}
@@ -30,6 +39,61 @@ final class Simple_Redis_Cache_Admin {
 			'manage_options',
 			self::PAGE,
 			array( self::class, 'settings_page' )
+		);
+	}
+
+	public static function enqueue_assets( string $hook_suffix ): void {
+		if ( 'settings_page_' . self::PAGE !== $hook_suffix || 'warm' !== self::current_tab() ) {
+			return;
+		}
+
+		wp_enqueue_style(
+			'simple-redis-cache-warm',
+			plugins_url( 'assets/css/admin-warm-cache.css', SIMPLE_REDIS_CACHE_FILE ),
+			array(),
+			SIMPLE_REDIS_CACHE_VERSION
+		);
+		wp_enqueue_script(
+			'simple-redis-cache-warm',
+			plugins_url( 'assets/js/admin-warm-cache.js', SIMPLE_REDIS_CACHE_FILE ),
+			array(),
+			SIMPLE_REDIS_CACHE_VERSION,
+			true
+		);
+		/* translators: %s: URL currently being warmed. */
+		$warming_string = __( 'Warming: %s', 'simple-redis-cache' );
+		/* translators: 1: processed URL count, 2: total URL count. */
+		$progress_string = __( 'Processed %1$d of %2$d URLs.', 'simple-redis-cache' );
+		wp_localize_script(
+			'simple-redis-cache-warm',
+			'SimpleRedisCacheWarm',
+			array(
+				'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
+				'prepareAction' => self::WARM_PREPARE_ACTION,
+				'proxyAction'   => self::WARM_URL_ACTION,
+				'nonce'         => wp_create_nonce( self::WARM_NONCE ),
+				'retryDelay'    => 250,
+				'strings'       => array(
+					'preparing'       => __( 'Discovering public URLs…', 'simple-redis-cache' ),
+					'noSources'       => __( 'Select at least one source to warm.', 'simple-redis-cache' ),
+					'noUrls'          => __( 'No cacheable public URLs were found for the selected sources.', 'simple-redis-cache' ),
+					'warming'         => $warming_string,
+					'progress'        => $progress_string,
+					'success'         => __( 'Cache warming completed successfully.', 'simple-redis-cache' ),
+					'partial'         => __( 'Cache warming completed with some URLs not cached.', 'simple-redis-cache' ),
+					'stopped'         => __( 'Cache warming was stopped.', 'simple-redis-cache' ),
+					'prepareFailed'   => __( 'Could not prepare cache warming.', 'simple-redis-cache' ),
+					'requestFailed'   => __( 'The frontend request failed.', 'simple-redis-cache' ),
+					'missingStatus'   => __( 'The frontend response did not contain a page-cache status.', 'simple-redis-cache' ),
+					'bypassMessage'   => __( 'The page cache bypassed this URL.', 'simple-redis-cache' ),
+					'notStored'       => __( 'Redis did not return a cache HIT after the page was rendered.', 'simple-redis-cache' ),
+					'alreadyCached'   => __( 'Already cached', 'simple-redis-cache' ),
+					'warmed'          => __( 'Warmed now', 'simple-redis-cache' ),
+					'bypassed'        => __( 'Bypassed', 'simple-redis-cache' ),
+					'failed'          => __( 'Failed', 'simple-redis-cache' ),
+					'unknownError'    => __( 'Unknown error.', 'simple-redis-cache' ),
+				),
+			)
 		);
 	}
 
@@ -50,10 +114,10 @@ final class Simple_Redis_Cache_Admin {
 			static function (): void {
 				echo '<p>' . esc_html__( 'PhpRedis and one standalone Redis server are supported. Credentials are stored in the WordPress database.', 'simple-redis-cache' ) . '</p>';
 			},
-			self::PAGE
+			self::section_page( 'redis' )
 		);
 
-		self::add_field( 'redis', 'scheme', __( 'Connection type', 'simple-redis-cache' ), 'select', array( 'tcp' => 'TCP', 'tls' => 'TLS', 'unix' => 'Unix socket' ) );
+		self::add_field( 'redis', 'scheme', __( 'Connection type', 'simple-redis-cache' ), 'select', array( 'tcp' => 'TCP', 'tls' => 'TLS', 'unix' => __( 'Unix socket', 'simple-redis-cache' ) ) );
 		self::add_field( 'redis', 'host', __( 'Host', 'simple-redis-cache' ), 'text', array(), __( 'For example: 127.0.0.1. Ignored for Unix sockets.', 'simple-redis-cache' ) );
 		self::add_field( 'redis', 'port', __( 'Port', 'simple-redis-cache' ), 'number', array( 'min' => 1, 'max' => 65535, 'step' => 1 ) );
 		self::add_field( 'redis', 'path', __( 'Unix socket path', 'simple-redis-cache' ), 'text' );
@@ -72,7 +136,7 @@ final class Simple_Redis_Cache_Admin {
 			static function (): void {
 				echo '<p>' . esc_html__( 'Stores WordPress Object Cache API values in Redis through object-cache.php.', 'simple-redis-cache' ) . '</p>';
 			},
-			self::PAGE
+			self::section_page( 'object' )
 		);
 
 		self::add_field( 'object', 'enabled', __( 'Enable object cache', 'simple-redis-cache' ), 'checkbox' );
@@ -87,7 +151,7 @@ final class Simple_Redis_Cache_Admin {
 			static function (): void {
 				echo '<p>' . esc_html__( 'Stores eligible public HTML responses in Redis through advanced-cache.php. No cached pages are written to disk.', 'simple-redis-cache' ) . '</p>';
 			},
-			self::PAGE
+			self::section_page( 'page' )
 		);
 
 		self::add_field( 'page', 'enabled', __( 'Enable page cache', 'simple-redis-cache' ), 'checkbox', array(), __( "Enabling this option also adds define( 'WP_CACHE', true ); to wp-config.php when needed.", 'simple-redis-cache' ) );
@@ -118,6 +182,28 @@ final class Simple_Redis_Cache_Admin {
 	 * @return array<string, mixed>
 	 */
 	public static function sanitize_settings( mixed $input ): array {
+		if ( is_array( $input ) && array_key_exists( self::SETTINGS_TAB, $input ) ) {
+			$tab = is_string( $input[ self::SETTINGS_TAB ] )
+				? sanitize_key( $input[ self::SETTINGS_TAB ] )
+				: '';
+			unset( $input[ self::SETTINGS_TAB ] );
+
+			if ( ! in_array( $tab, self::FORM_TABS, true ) || ! isset( $input[ $tab ] ) || ! is_array( $input[ $tab ] ) ) {
+				add_settings_error(
+					Simple_Redis_Cache_Config::OPTION,
+					'src_invalid_settings_tab',
+					__( 'The settings were not saved because the submitted section was invalid. Please reload the page and try again.', 'simple-redis-cache' ),
+					'error'
+				);
+
+				return Simple_Redis_Cache_Config::get();
+			}
+
+			$merged         = Simple_Redis_Cache_Config::get();
+			$merged[ $tab ] = $input[ $tab ];
+			$input          = $merged;
+		}
+
 		$config = Simple_Redis_Cache_Config::sanitize( $input );
 
 		add_action(
@@ -135,20 +221,31 @@ final class Simple_Redis_Cache_Admin {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
+
+		$tab = self::current_tab();
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Simple Redis Cache', 'simple-redis-cache' ); ?></h1>
 			<p><?php esc_html_e( 'Redis-only object and full-page cache for a single WordPress site. Cache entries are isolated by WP_CACHE_KEY_SALT when it is defined.', 'simple-redis-cache' ); ?></p>
 
-			<form action="options.php" method="post">
-				<?php
-				settings_fields( 'simple_redis_cache' );
-				do_settings_sections( self::PAGE );
-				submit_button();
-				?>
-			</form>
+			<?php self::render_tabs( $tab ); ?>
 
-			<?php self::render_diagnostics(); ?>
+			<?php if ( 'status' === $tab ) : ?>
+				<?php self::render_diagnostics(); ?>
+			<?php elseif ( 'warm' === $tab ) : ?>
+				<?php self::render_warm_page(); ?>
+			<?php else : ?>
+				<form action="options.php" method="post">
+					<?php
+					settings_fields( 'simple_redis_cache' );
+					?>
+					<input type="hidden" name="<?php echo esc_attr( Simple_Redis_Cache_Config::OPTION . '[' . self::SETTINGS_TAB . ']' ); ?>" value="<?php echo esc_attr( $tab ); ?>">
+					<?php
+					do_settings_sections( self::section_page( $tab ) );
+					submit_button();
+					?>
+				</form>
+			<?php endif; ?>
 		</div>
 		<?php
 	}
@@ -223,7 +320,7 @@ final class Simple_Redis_Cache_Admin {
 				sprintf(
 					/* translators: %s: Redis error. */
 					__( 'Redis connection failed: %s', 'simple-redis-cache' ),
-					$redis->error() ?: __( 'Unknown error.', 'simple-redis-cache' )
+					$redis->display_error() ?: __( 'Unknown error.', 'simple-redis-cache' )
 				),
 				'error'
 			);
@@ -259,6 +356,52 @@ final class Simple_Redis_Cache_Admin {
 		self::redirect_back();
 	}
 
+	public static function ajax_prepare_warm(): void {
+		self::authorize_ajax_warm();
+
+		wp_raise_memory_limit( 'admin' );
+		$system     = self::request_name_list( $_POST['system'] ?? array() );
+		$post_types = self::request_name_list( $_POST['post_types'] ?? array() );
+		$taxonomies = self::request_name_list( $_POST['taxonomies'] ?? array() );
+		$result     = Simple_Redis_Cache_Warmer::discover( $system, $post_types, $taxonomies, Simple_Redis_Cache_Config::get() );
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => implode( ' ', $result->get_error_messages() ) ), 400 );
+		}
+
+		if ( $result['selected_sources'] < 1 ) {
+			wp_send_json_error( array( 'message' => __( 'Select at least one source to warm.', 'simple-redis-cache' ) ), 400 );
+		}
+
+		$user_id = get_current_user_id();
+		$items   = array();
+		foreach ( $result['urls'] as $url ) {
+			$items[] = array(
+				'url'       => $url,
+				'signature' => Simple_Redis_Cache_Warmer::sign_url( $url, $user_id ),
+			);
+		}
+
+		wp_send_json_success(
+			array(
+				'items'    => $items,
+				'warnings' => $result['warnings'],
+			)
+		);
+	}
+
+	public static function ajax_warm_url(): void {
+		self::authorize_ajax_warm();
+
+		$url       = isset( $_POST['url'] ) && is_string( $_POST['url'] ) ? esc_url_raw( wp_unslash( $_POST['url'] ) ) : '';
+		$signature = isset( $_POST['signature'] ) && is_string( $_POST['signature'] ) ? sanitize_text_field( wp_unslash( $_POST['signature'] ) ) : '';
+		if ( '' === $url || ! Simple_Redis_Cache_Warmer::verify_url_signature( $url, $signature, get_current_user_id() ) ) {
+			wp_send_json_error( array( 'message' => __( 'The cache-warming URL could not be verified.', 'simple-redis-cache' ) ), 400 );
+		}
+
+		wp_send_json_success( Simple_Redis_Cache_Warmer::warm_remote_url( $url ) );
+	}
+
 	public static function admin_bar( WP_Admin_Bar $bar ): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -267,15 +410,16 @@ final class Simple_Redis_Cache_Admin {
 		$bar->add_node(
 			array(
 				'id'    => 'simple-redis-cache',
-				'title' => __( 'Clear Redis cache', 'simple-redis-cache' ),
-				'href'  => self::purge_url( 'all' ),
-				'meta'  => array( 'title' => __( 'Clear all Redis caches', 'simple-redis-cache' ) ),
+				'title' => __( 'Caching', 'simple-redis-cache' ),
+				'href'  => self::settings_url(),
+				'meta'  => array( 'title' => __( 'Caching', 'simple-redis-cache' ) ),
 			)
 		);
 
 		$bar->add_node( array( 'parent' => 'simple-redis-cache', 'id' => 'src-clear-all', 'title' => __( 'Clear all', 'simple-redis-cache' ), 'href' => self::purge_url( 'all' ) ) );
 		$bar->add_node( array( 'parent' => 'simple-redis-cache', 'id' => 'src-clear-page', 'title' => __( 'Clear HTML page cache', 'simple-redis-cache' ), 'href' => self::purge_url( 'page' ) ) );
 		$bar->add_node( array( 'parent' => 'simple-redis-cache', 'id' => 'src-clear-object', 'title' => __( 'Clear object cache', 'simple-redis-cache' ), 'href' => self::purge_url( 'object' ) ) );
+		$bar->add_node( array( 'parent' => 'simple-redis-cache', 'id' => 'src-warm-page', 'title' => __( 'Warm cache', 'simple-redis-cache' ), 'href' => self::settings_url( 'warm' ) ) );
 		$bar->add_node( array( 'parent' => 'simple-redis-cache', 'id' => 'src-settings', 'title' => __( 'Settings', 'simple-redis-cache' ), 'href' => self::settings_url() ) );
 	}
 
@@ -325,21 +469,24 @@ final class Simple_Redis_Cache_Admin {
 		foreach ( array( 'object', 'page' ) as $type ) {
 			if ( ! empty( $config[ $type ]['enabled'] ) ) {
 				$state = Simple_Redis_Cache_Dropins::status( $type );
+				$cache_label = 'object' === $type
+					? _x( 'Object cache', 'cache type in an admin notice', 'simple-redis-cache' )
+					: _x( 'HTML page cache', 'cache type in an admin notice', 'simple-redis-cache' );
 				if ( 'foreign' === $state ) {
 					self::notice_html(
 						sprintf(
-							/* translators: %s: object or page. */
-							__( 'The %s cache cannot start because another plugin owns its WordPress drop-in.', 'simple-redis-cache' ),
-							$type
+							/* translators: %s: localized cache type. */
+							__( '%s cannot start because another plugin owns its WordPress drop-in.', 'simple-redis-cache' ),
+							$cache_label
 						),
 						'error'
 					);
 				} elseif ( 'missing' === $state ) {
 					self::notice_html(
 						sprintf(
-							/* translators: %s: object or page. */
-							__( 'The %s cache is enabled in settings, but its WordPress drop-in is not installed.', 'simple-redis-cache' ),
-							$type
+							/* translators: %s: localized cache type. */
+							__( '%s is enabled in settings, but its WordPress drop-in is not installed.', 'simple-redis-cache' ),
+							$cache_label
 						),
 						'error'
 					);
@@ -364,11 +511,10 @@ final class Simple_Redis_Cache_Admin {
 			'missing' => __( 'Not installed', 'simple-redis-cache' ),
 		);
 		?>
-		<hr>
 		<h2><?php esc_html_e( 'Status and diagnostics', 'simple-redis-cache' ); ?></h2>
 		<table class="widefat striped" style="max-width:900px"><tbody>
 			<tr><th scope="row"><?php esc_html_e( 'PhpRedis', 'simple-redis-cache' ); ?></th><td><?php echo extension_loaded( 'redis' ) ? esc_html__( 'Available', 'simple-redis-cache' ) : esc_html__( 'Missing', 'simple-redis-cache' ); ?></td></tr>
-			<tr><th scope="row"><?php esc_html_e( 'Redis connection', 'simple-redis-cache' ); ?></th><td><?php echo $redis_ok ? esc_html__( 'Connected', 'simple-redis-cache' ) : esc_html( $redis->error() ?: __( 'Unavailable', 'simple-redis-cache' ) ); ?></td></tr>
+			<tr><th scope="row"><?php esc_html_e( 'Redis connection', 'simple-redis-cache' ); ?></th><td><?php echo $redis_ok ? esc_html__( 'Connected', 'simple-redis-cache' ) : esc_html( $redis->display_error() ?: __( 'Unavailable', 'simple-redis-cache' ) ); ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'Object drop-in', 'simple-redis-cache' ); ?></th><td><?php echo esc_html( $status_text[ $object_state ] ); ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'Page drop-in', 'simple-redis-cache' ); ?></th><td><?php echo esc_html( $status_text[ $page_state ] ); ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'WP_CACHE', 'simple-redis-cache' ); ?></th><td><?php echo defined( 'WP_CACHE' ) && WP_CACHE ? esc_html__( 'true', 'simple-redis-cache' ) : esc_html__( 'not true', 'simple-redis-cache' ); ?></td></tr>
@@ -389,13 +535,103 @@ final class Simple_Redis_Cache_Admin {
 		<?php
 	}
 
+	private static function render_warm_page(): void {
+		$config       = Simple_Redis_Cache_Config::get();
+		$page         = (array) ( $config['page'] ?? array() );
+		$page_enabled = ! empty( $page['enabled'] );
+		$post_types   = Simple_Redis_Cache_Warmer::public_post_types();
+		$taxonomies   = Simple_Redis_Cache_Warmer::public_taxonomies();
+		?>
+		<div id="src-cache-warm" class="src-cache-warm">
+			<h2><?php esc_html_e( 'Cache warming', 'simple-redis-cache' ); ?></h2>
+			<p><?php esc_html_e( 'Select public WordPress content to request anonymously and store in the Redis HTML page cache. Existing cache entries are verified and left unchanged.', 'simple-redis-cache' ); ?></p>
+
+			<?php if ( ! $page_enabled ) : ?>
+				<div class="notice notice-error inline"><p><?php esc_html_e( 'Enable HTML page cache before warming it.', 'simple-redis-cache' ); ?></p></div>
+			<?php endif; ?>
+
+			<form id="src-cache-warm-form">
+				<div class="src-warm-toolbar">
+					<button type="button" class="button" id="src-warm-select-all"<?php disabled( ! $page_enabled ); ?>><?php esc_html_e( 'Select all', 'simple-redis-cache' ); ?></button>
+					<button type="button" class="button" id="src-warm-select-none"<?php disabled( ! $page_enabled ); ?>><?php esc_html_e( 'Select none', 'simple-redis-cache' ); ?></button>
+				</div>
+
+				<div class="src-warm-groups">
+					<fieldset class="src-warm-group">
+						<legend><?php esc_html_e( 'System pages', 'simple-redis-cache' ); ?></legend>
+						<?php foreach ( Simple_Redis_Cache_Warmer::system_sources() as $name => $label ) : ?>
+							<?php
+							$available = Simple_Redis_Cache_Warmer::SYSTEM_HOME === $name
+								? ! empty( $page['cache_home'] )
+								: ! empty( $page['cache_archives'] );
+							$available = $page_enabled && $available;
+							?>
+							<label class="src-warm-option<?php echo $available ? '' : ' is-disabled'; ?>">
+								<input type="checkbox" name="system[]" value="<?php echo esc_attr( $name ); ?>" checked <?php disabled( ! $available ); ?>>
+								<span><strong><?php echo esc_html( $label ); ?></strong></span>
+							</label>
+						<?php endforeach; ?>
+						<p class="description"><?php esc_html_e( 'Includes existing pagination for the posts, author and date archives.', 'simple-redis-cache' ); ?></p>
+					</fieldset>
+
+					<fieldset class="src-warm-group">
+						<legend><?php esc_html_e( 'Public post types', 'simple-redis-cache' ); ?></legend>
+						<?php foreach ( $post_types as $name => $object ) : ?>
+							<?php
+							$has_archive = 'post' === $name ? ! empty( $page['cache_home'] ) : ( ! empty( $page['cache_archives'] ) && (bool) get_post_type_archive_link( $name ) );
+							$available   = $page_enabled && is_post_type_viewable( $object ) && ( ! empty( $page['cache_singular'] ) || $has_archive );
+							$attachment_disabled = 'attachment' === $name && ! Simple_Redis_Cache_Warmer::attachment_pages_enabled();
+							$available   = $available && ! $attachment_disabled;
+							?>
+							<label class="src-warm-option<?php echo $available ? '' : ' is-disabled'; ?>">
+								<input type="checkbox" name="post_types[]" value="<?php echo esc_attr( $name ); ?>" checked <?php disabled( ! $available ); ?>>
+								<span><strong><?php echo esc_html( $object->labels->name ); ?></strong> <code><?php echo esc_html( $name ); ?></code><small><?php echo ! empty( $object->_builtin ) ? esc_html__( 'Standard', 'simple-redis-cache' ) : esc_html__( 'Custom', 'simple-redis-cache' ); ?></small></span>
+							</label>
+							<?php if ( $attachment_disabled ) : ?>
+								<p class="description src-warm-option-note"><?php esc_html_e( 'WordPress attachment pages are disabled, so media URLs will not be warmed.', 'simple-redis-cache' ); ?></p>
+							<?php endif; ?>
+						<?php endforeach; ?>
+						<p class="description"><?php esc_html_e( 'Each selection includes all public, non-password-protected singular items and its public archive with pagination when available.', 'simple-redis-cache' ); ?></p>
+					</fieldset>
+
+					<fieldset class="src-warm-group">
+						<legend><?php esc_html_e( 'Public taxonomies', 'simple-redis-cache' ); ?></legend>
+						<?php foreach ( $taxonomies as $name => $object ) : ?>
+							<?php $available = $page_enabled && ! empty( $page['cache_archives'] ) && is_taxonomy_viewable( $object ); ?>
+							<label class="src-warm-option<?php echo $available ? '' : ' is-disabled'; ?>">
+								<input type="checkbox" name="taxonomies[]" value="<?php echo esc_attr( $name ); ?>" checked <?php disabled( ! $available ); ?>>
+								<span><strong><?php echo esc_html( $object->labels->name ); ?></strong> <code><?php echo esc_html( $name ); ?></code><small><?php echo ! empty( $object->_builtin ) ? esc_html__( 'Standard', 'simple-redis-cache' ) : esc_html__( 'Custom', 'simple-redis-cache' ); ?></small></span>
+							</label>
+						<?php endforeach; ?>
+						<p class="description"><?php esc_html_e( 'Each selection includes non-empty public term archives and their known pagination.', 'simple-redis-cache' ); ?></p>
+					</fieldset>
+				</div>
+
+				<p class="description"><?php esc_html_e( 'Warming generates the anonymous default-language variant. Keep this tab open until the process finishes.', 'simple-redis-cache' ); ?></p>
+				<p class="submit">
+					<button type="submit" class="button button-primary" id="src-warm-start"<?php disabled( ! $page_enabled ); ?>><?php esc_html_e( 'Warm cache', 'simple-redis-cache' ); ?></button>
+					<button type="button" class="button" id="src-warm-stop" hidden><?php esc_html_e( 'Stop', 'simple-redis-cache' ); ?></button>
+				</p>
+			</form>
+
+			<div id="src-warm-progress-wrap" class="src-warm-progress" hidden>
+				<progress id="src-warm-progress" value="0" max="1"></progress>
+				<p id="src-warm-progress-text" aria-live="polite"></p>
+				<div id="src-warm-counts" class="src-warm-counts"></div>
+			</div>
+			<div id="src-warm-result" aria-live="polite"></div>
+			<ul id="src-warm-errors" class="src-warm-errors" hidden></ul>
+		</div>
+		<?php
+	}
+
 	/** @param array<string, mixed> $options */
 	private static function add_field( string $group, string $key, string $title, string $type, array $options = array(), string $description = '' ): void {
 		add_settings_field(
 			'src-' . $group . '-' . $key,
 			$title,
 			array( self::class, 'render_field' ),
-			self::PAGE,
+			self::section_page( $group ),
 			'src_' . $group,
 			array(
 				'group'       => $group,
@@ -416,6 +652,37 @@ final class Simple_Redis_Cache_Admin {
 		check_admin_referer( $nonce_action );
 	}
 
+	private static function authorize_ajax_warm(): void {
+		if ( 'POST' !== strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) ) {
+			wp_send_json_error( array( 'message' => __( 'Cache warming accepts POST requests only.', 'simple-redis-cache' ) ), 405 );
+		}
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'You are not allowed to warm this cache.', 'simple-redis-cache' ) ), 403 );
+		}
+		if ( ! check_ajax_referer( self::WARM_NONCE, 'nonce', false ) ) {
+			wp_send_json_error( array( 'message' => __( 'The cache-warming security token is invalid or expired.', 'simple-redis-cache' ) ), 403 );
+		}
+	}
+
+	/** @param mixed $value @return string[] */
+	private static function request_name_list( mixed $value ): array {
+		if ( ! is_array( $value ) ) {
+			return array();
+		}
+
+		$names = array();
+		foreach ( wp_unslash( $value ) as $name ) {
+			if ( is_string( $name ) ) {
+				$name = sanitize_key( $name );
+				if ( '' !== $name ) {
+					$names[] = $name;
+				}
+			}
+		}
+
+		return array_values( array_unique( $names ) );
+	}
+
 	private static function purge_url( string $scope ): string {
 		$url = add_query_arg(
 			array( 'action' => self::PURGE_ACTION, 'scope' => $scope ),
@@ -425,18 +692,55 @@ final class Simple_Redis_Cache_Admin {
 		return wp_nonce_url( $url, self::PURGE_ACTION . '_' . $scope );
 	}
 
-	private static function settings_url(): string {
-		return admin_url( 'options-general.php?page=' . self::PAGE );
+	private static function settings_url( string $tab = '' ): string {
+		$url = admin_url( 'options-general.php?page=' . self::PAGE );
+		if ( in_array( $tab, array_merge( self::FORM_TABS, array( 'warm', 'status' ) ), true ) ) {
+			$url = add_query_arg( 'tab', $tab, $url );
+		}
+
+		return $url;
 	}
 
 	private static function redirect_back(): never {
 		$redirect = wp_get_referer();
 		if ( ! $redirect || false !== strpos( $redirect, 'admin-post.php' ) ) {
-			$redirect = self::settings_url();
+			$redirect = self::settings_url( 'status' );
 		}
 
 		wp_safe_redirect( $redirect );
 		exit;
+	}
+
+	/** @return array<string, string> */
+	private static function tabs(): array {
+		return array(
+			'redis'  => __( 'Redis connection', 'simple-redis-cache' ),
+			'object' => __( 'Object cache', 'simple-redis-cache' ),
+			'page'   => __( 'HTML page cache', 'simple-redis-cache' ),
+			'warm'   => __( 'Cache warming', 'simple-redis-cache' ),
+			'status' => __( 'Status', 'simple-redis-cache' ),
+		);
+	}
+
+	private static function current_tab(): string {
+		$tab = isset( $_GET['tab'] ) && is_string( $_GET['tab'] )
+			? sanitize_key( wp_unslash( $_GET['tab'] ) )
+			: self::DEFAULT_TAB;
+
+		return array_key_exists( $tab, self::tabs() ) ? $tab : self::DEFAULT_TAB;
+	}
+
+	private static function section_page( string $tab ): string {
+		return self::PAGE . '-' . $tab;
+	}
+
+	private static function render_tabs( string $current_tab ): void {
+		echo '<nav class="nav-tab-wrapper wp-clearfix" aria-label="' . esc_attr__( 'Cache settings sections', 'simple-redis-cache' ) . '">';
+		foreach ( self::tabs() as $tab => $label ) {
+			$active = $current_tab === $tab;
+			echo '<a class="nav-tab' . ( $active ? ' nav-tab-active' : '' ) . '" href="' . esc_url( self::settings_url( $tab ) ) . '"' . ( $active ? ' aria-current="page"' : '' ) . '>' . esc_html( $label ) . '</a>';
+		}
+		echo '</nav>';
 	}
 
 	private static function notice_html( string $message, string $type ): void {

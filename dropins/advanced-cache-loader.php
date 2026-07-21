@@ -33,7 +33,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 		/** @param array<string, mixed> $config */
 		public static function run( array $config, string $plugin_dir ): void {
 			$page  = (array) ( $config['page'] ?? array() );
-			$debug = ! empty( $page['debug_header'] );
+			$debug = ! empty( $page['debug_header'] ) || self::is_warm_request();
 
 			if ( function_exists( 'is_multisite' ) && is_multisite() ) {
 				self::debug_header( $debug, 'BYPASS' );
@@ -71,6 +71,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				'capture_file'       => $plugin_dir . '/includes/class-simple-redis-cache-page-capture.php',
 				'deferred_logged_in' => $request->has_auth_cookie_variant(),
 				'early_ob_level'      => ob_get_level(),
+				'debug_header'        => $debug,
 			);
 
 			/*
@@ -162,7 +163,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 		public static function defer_logged_in( array $context ): void {
 			$config = (array) ( $context['config'] ?? array() );
 			$page   = (array) ( $config['page'] ?? array() );
-			$debug  = ! empty( $page['debug_header'] );
+			$debug  = ! empty( $context['debug_header'] ) || ! empty( $page['debug_header'] );
 
 			if ( ! function_exists( 'add_action' ) || ! function_exists( 'add_filter' ) ) {
 				self::debug_header( $debug, 'BYPASS' );
@@ -192,7 +193,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				unset( $GLOBALS['simple_redis_cache_logged_in_context'] );
 				$config = (array) ( $context['config'] ?? array() );
 				$page   = (array) ( $config['page'] ?? array() );
-				self::debug_header( ! empty( $page['debug_header'] ), 'BYPASS' );
+				self::debug_header( ! empty( $context['debug_header'] ) || ! empty( $page['debug_header'] ), 'BYPASS' );
 				return;
 			}
 
@@ -215,7 +216,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				if ( is_array( $context ) ) {
 					$config = (array) ( $context['config'] ?? array() );
 					$page   = (array) ( $config['page'] ?? array() );
-					self::debug_header( ! empty( $page['debug_header'] ), 'BYPASS' );
+					self::debug_header( ! empty( $context['debug_header'] ) || ! empty( $page['debug_header'] ), 'BYPASS' );
 				}
 				return $template;
 			}
@@ -266,7 +267,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 
 			$config = (array) ( $context['config'] ?? array() );
 			$page   = (array) ( $config['page'] ?? array() );
-			$debug  = ! empty( $page['debug_header'] );
+			$debug  = ! empty( $context['debug_header'] ) || ! empty( $page['debug_header'] );
 
 			try {
 				if (
@@ -373,7 +374,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				self::release_lock( $context );
 				$config = (array) ( $context['config'] ?? array() );
 				$page   = (array) ( $config['page'] ?? array() );
-				self::debug_header( ! empty( $page['debug_header'] ), 'BYPASS' );
+				self::debug_header( ! empty( $context['debug_header'] ) || ! empty( $page['debug_header'] ), 'BYPASS' );
 				return;
 			}
 
@@ -767,6 +768,11 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 			if ( $enabled && ! headers_sent() ) {
 				header( 'X-Simple-Redis-Cache: ' . $value, true );
 			}
+		}
+
+		private static function is_warm_request(): bool {
+			$value = $_SERVER['HTTP_X_SIMPLE_REDIS_CACHE_WARM'] ?? '';
+			return is_scalar( $value ) && '1' === trim( (string) $value );
 		}
 
 		private static function lock_token(): string {

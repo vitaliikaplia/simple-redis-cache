@@ -20,12 +20,13 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 - єдина користувацька константа для namespace кешу — `WP_CACHE_KEY_SALT`;
 - `WP_CACHE` використовується лише як стандартний прапорець WordPress для `advanced-cache.php`;
 - жодного filesystem cache, Predis, Redis Cluster, Sentinel, replica routing або CDN;
-- жодної мініфікації, preload, cron warmup чи автоматичної інвалідації за подіями контенту;
+- жодної мініфікації, scheduled/background preload, cron warmup чи автоматичної інвалідації за подіями контенту;
+- дозволений лише ручний browser-led прогрів HTML-кешу з відкритої admin-вкладки;
 - очищення тільки вручну;
 - ніколи не застосовувати `FLUSHDB`, `FLUSHALL` або Redis `KEYS`;
 - будь-який Redis/cache failure має бути fail-open для звичайного HTTP-запиту.
 
-Плагін не має Composer/autoloader, JavaScript/CSS build, REST API, AJAX API, WP-CLI команд або власних cron-задач.
+Плагін не має Composer/autoloader, JavaScript/CSS build, REST API, WP-CLI команд або власних cron-задач. Є лише два privileged `wp_ajax_*` actions для discovery та cross-origin fallback ручного прогріву.
 
 ## 2. Карта файлів
 
@@ -37,8 +38,9 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 | `includes/class-simple-redis-cache-config.php` | Читання option напряму з БД, sanitization, атомарний generated config. |
 | `includes/class-simple-redis-cache-redis.php` | Мінімальний PhpRedis connection wrapper і generation counters. |
 | `includes/class-simple-redis-cache-dropins.php` | Встановлення, видалення, ownership-check drop-in та безпечне ввімкнення `WP_CACHE`. |
-| `includes/class-simple-redis-cache-admin.php` | Settings API, діагностика, connection test, notices, admin-bar purge. |
+| `includes/class-simple-redis-cache-admin.php` | Settings API, діагностика, connection test, notices, admin bar і privileged warmup AJAX. |
 | `includes/class-simple-redis-cache-purger.php` | Ручна інвалідація object/page namespaces та очищення DB transients. |
+| `includes/class-simple-redis-cache-warmer.php` | Allowlisted discovery публічних frontend URL, URL signatures і server-side warm fallback. |
 | `includes/class-simple-redis-cache-page-capture.php` | Пізня валідація WordPress-відповіді, output capture і атомарний запис HTML. |
 | `includes/class-simple-redis-cache-github-updater.php` | Інтеграція GitHub-гілки зі стандартним WordPress updater. |
 | `dropins/object-cache.php` | Мінімальний шаблон, що копіюється в `wp-content/object-cache.php`. |
@@ -47,9 +49,14 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 | `dropins/advanced-cache.php` | Мінімальний шаблон, що копіюється в `wp-content/advanced-cache.php`. |
 | `dropins/advanced-cache-loader.php` | Ранній HIT/MISS runtime, logged-in validation і stampede lock. |
 | `dropins/class-simple-redis-cache-page-request.php` | Dependency-free request validation та page-key canonicalization. |
+| `assets/js/admin-warm-cache.js` | Послідовний HEAD/GET/HEAD warmup, live progress, stop і verified result counters. |
+| `assets/css/admin-warm-cache.css` | Layout вкладки ручного прогріву без build-кроку. |
 | `uninstall.php` | Видалення plugin-owned файлів і WordPress state. |
 | `readme.txt` | WordPress-format metadata/changelog. |
 | `README.md` | Коротка документація для користувача. |
+| `languages/simple-redis-cache.pot` | Канонічний шаблон gettext-рядків. |
+| `languages/simple-redis-cache-uk.po` | Український переклад для WordPress locale `uk`. |
+| `languages/simple-redis-cache-uk.mo` | Скомпільований runtime-переклад, який має постачатися разом із плагіном. |
 
 Drop-in шаблони мають залишатися маленькими. Під час встановлення placeholder замінюється абсолютним шляхом до loader усередині поточної директорії плагіна. Основна логіка залишається в plugin directory, тому звичайне оновлення коду змінює runtime без копіювання великих файлів у `wp-content`.
 
@@ -78,7 +85,7 @@ Drop-in шаблони мають залишатися маленькими. П�
 - deactivation → `Simple_Redis_Cache_Plugin::deactivate()`;
 - `plugins_loaded` → `Simple_Redis_Cache_Plugin::init()`.
 
-`Plugin::init()` завантажує text domain, відмовляється запускати підсистеми на multisite, створює GitHub updater, ініціалізує admin hooks і слухає `update_option_simple_redis_cache_settings`.
+`Plugin::init()` реєструє завантаження text domain на `init` priority `0`, відмовляється запускати підсистеми на multisite, створює GitHub updater, ініціалізує admin hooks і слухає `update_option_simple_redis_cache_settings`. Activation окремо викликає `load_textdomain()`, оскільки activation request може підключити файл плагіна після того, як `plugins_loaded` або `init` уже відпрацювали.
 
 ### 3.2. Generated early config
 
@@ -332,13 +339,15 @@ _site_transient_timeout_{key}
 - multisite;
 - `DONOTCACHEPAGE`, admin, AJAX, cron, REST, XML-RPC, WP-CLI;
 - Authorization/Basic Auth;
-- Range, conditional headers і hard-refresh directives;
+- Range, conditional headers і explicit request `Cache-Control: no-store`;
 - host/port, що не збігаються з generated `home_url()` metadata;
 - malformed URI/percent encoding/control characters;
 - `/wp-admin`, `/wp-json`, `/wp-content`, `/wp-includes` та core service endpoints;
 - configured path/cookie/User-Agent exclusions.
 
 Scheme визначається через `HTTPS`/`SERVER_PORT`, а не forwarded headers. Reverse proxy має коректно передавати server environment. Raw path не canonicalize-иться за slash/dot/encoding, тому еквівалентні URL можуть мати різні keys.
+
+Browser reload часто надсилає request `Cache-Control: no-cache`, `max-age=0` та/або `Pragma: no-cache`. Ці директиви навмисно не обходять server-side Redis page cache: звичайний і hard reload можуть отримати HIT. `Cache-Control: no-store`, Range та conditional headers залишаються BYPASS, оскільки cached 200 не реалізує byte ranges або HTTP preconditions.
 
 Завжди unsafe query names перевіряються до ignore rules: nonces, preview/customizer, REST route, cart actions, cron і builder-preview parameters. Query pair order зберігається. Ignored names вилучаються з key. Якщо `cache_query_strings=false`, non-ignored query дає bypass, крім вузького search-набору `s`, `paged`, `post_type` за ввімкненого search cache.
 
@@ -440,15 +449,55 @@ X-Simple-Redis-Cache: HIT | MISS | BYPASS
 
 Немає hooks на `save_post`, comments, terms, menus, WooCommerce тощо. Не додавати auto purge без прямої вимоги, окремого дизайну і документації.
 
+### 10.1. Ручний прогрів HTML-кешу
+
+`Simple_Redis_Cache_Warmer::discover()` приймає тільки три списки machine names, які перетинає з актуальними `get_post_types( ['public' => true] )`, `get_taxonomies( ['public' => true] )` та allowlist системних джерел. Довільний URL від input не генерує кеш-запит. Discovery додає та deduplicate-ить лише URL з тим самим scheme/host/effective port, що й `home_url()`:
+
+- головну, posts page та їх pagination;
+- author і наявні year/month/day archives із pagination;
+- public non-password singular posts/pages/CPT і public post type archives;
+- непорожні public taxonomy term archives та відому pagination.
+
+Search і 404 не мають скінченного discoverable набору. Feeds, REST, embeds, robots, favicon та service endpoints ранній runtime не кешує, тому warmer їх не додає. Attachment post type залишається видимим в UI, але disabled, коли `wp_attachment_pages_enabled=0`. Анонімний прогрів створює лише default/no-cookie variant; мовні `vary_cookies` прогріваються природно реальними запитами.
+
+Same-origin flow:
+
+```text
+POST wp_ajax_simple_redis_cache_prepare_warm + manage_options + nonce
+  → signed allowlisted URL items
+  → browser HEAD credentials=omit
+  → HIT = already cached
+  → MISS → GET credentials=omit, повністю дочитати body → HEAD
+  → тільки фінальний HIT = warmed
+```
+
+Warm request header `X-Simple-Redis-Cache-Warm: 1` лише примусово показує `X-Simple-Redis-Cache` для цієї відповіді. Він не змінює eligibility, canonical key, cookies або cache semantics. Effective debug flag передається через early-loader context до `Page_Capture`, щоб late validation могла замінити ранній `MISS` на `BYPASS`.
+
+Якщо frontend і admin мають різні origins або direct Fetch падає на network layer, JS викликає `wp_ajax_simple_redis_cache_warm_url`. URL має HMAC-підпис для поточного user ID, повторно проходить same-site validation, а loopback HEAD/GET не отримує admin cookies чи Authorization і не follow-ить redirects. Endpoint доступний тільки через POST, `manage_options` та nonce; `nopriv` hook немає.
+
+Warmup не очищає generation і не перезаписує existing HIT. Для повної регенерації адміністратор окремо очищує page cache перед запуском. `MISS` ніколи не вважається успіхом: late header/body/status validation або lock race можуть не записати payload. Вкладку треба тримати відкритою; cron/background continuation немає.
+
 ## 11. Admin UI та security
 
-Сторінка: **Settings → Redis Cache**, slug `simple-redis-cache`. Capability — `manage_options`.
+Сторінка: **Settings → Redis Cache**, slug `simple-redis-cache`. Capability — `manage_options`. Інтерфейс має п'ять вкладок; JavaScript завантажується лише для ручного прогріву:
+
+- `redis` — підключення до Redis;
+- `object` — Object Cache;
+- `page` — HTML Page Cache;
+- `warm` — source selection, live progress і verified manual warmup;
+- `status` — live diagnostics, connection test і ручне очищення.
+
+Menu slug залишається спільним, а Settings API sections реєструються на внутрішніх page IDs `simple-redis-cache-{tab}`. `tab` читається тільки як string, проходить `wp_unslash()`/`sanitize_key()` та allowlist; невідоме значення повертає `redis`.
+
+Форми перших трьох вкладок передають marker `simple_redis_cache_settings[_settings_tab]`. `Admin::sanitize_settings()` зливає на сервері тільки надіслану групу з поточним повним config, після чого передає результат у `Config::sanitize()`. Так збереження однієї вкладки не скидає дві інші, unchecked checkbox активної вкладки все одно стає `false`, а Redis password не копіюється в hidden HTML. Без marker зберігається сумісна поведінка sanitization повного payload. Вкладки `warm` і `status` не мають Settings API form і не виконують Save.
 
 Hooks:
 
-- `admin_menu`, `admin_init`, `admin_notices`;
+- `admin_menu`, `admin_init`, `admin_notices`, `admin_enqueue_scripts`;
 - `admin_post_simple_redis_cache_test_redis`;
 - `admin_post_simple_redis_cache_purge`;
+- `wp_ajax_simple_redis_cache_prepare_warm`;
+- `wp_ajax_simple_redis_cache_warm_url`;
 - `admin_bar_menu` priority 100;
 - `plugin_action_links_{basename}`.
 
@@ -456,7 +505,15 @@ Connection test і purge перевіряють capability та nonce. Test пр
 
 Під час sanitization додається shutdown sync на `PHP_INT_MAX`, щоб повторний Save міг виправити permission/collision навіть коли option value не змінився. `Plugin::$last_config_hash` запобігає duplicate sync у тому самому request.
 
-Admin bar має Clear all/page/object і Settings. Parent node теж очищує all. Усі URL scope-specific nonce protected.
+Admin bar parent називається `Caching`, веде на settings і має Clear all/page/object, Warm cache та Settings. Purge URL залишаються scope-specific nonce protected.
+
+### 11.1. Локалізація
+
+Канонічна мова PHP-рядків — англійська, text domain — `simple-redis-cache`, bundled domain path — `/languages`. Англійська працює як source fallback без окремого MO. Український WordPress locale — саме `uk`, тому runtime-файл називається `simple-redis-cache-uk.mo`.
+
+Усі видимі UI-рядки, tabs, labels, descriptions, notices, admin-bar actions, localized JavaScript strings і plugin-details modal мають використовувати gettext із точним domain. Machine values (`redis`, `object`, `page`, `warm`, `status`, option/action keys, Redis schemes) не перекладаються. Після зміни рядків потрібно заново згенерувати POT, синхронізувати PO, скомпілювати MO і перевірити placeholders та fuzzy entries.
+
+Redis wrapper використовується ранніми drop-in до нормального plugin bootstrap, тому `error()` залишається dependency-free. `display_error()` локалізує лише власні стабільні повідомлення під час звичайного WordPress UI; невідомі exception messages PhpRedis повертаються без змін.
 
 ## 12. Drop-in ownership і `WP_CACHE`
 
@@ -563,9 +620,10 @@ Release checklist:
 
 1. однаково підняти header `Version` і `SIMPLE_REDIS_CACHE_VERSION`;
 2. оновити `Stable tag` і changelog;
-3. за зміни requirements синхронізувати main header, readmes та hard-coded updater fields;
-4. перевірити ZIP root behavior;
-5. запушити coherent tree у `master`.
+3. оновити POT/PO `Project-Id-Version`, скомпілювати MO та перевірити обидві локалі;
+4. за зміни requirements синхронізувати main header, readmes та hard-coded updater fields;
+5. перевірити ZIP root behavior;
+6. запушити coherent tree у `master`.
 
 Tag або GitHub Release поточному updater не потрібні.
 
@@ -577,6 +635,7 @@ Tag або GitHub Release поточному updater не потрібні.
 - Anonymous output-buffer guard порівнює лише `ob_get_level()`, а не identity handlers; заміна stack зі збереженням тієї самої глибини не буде виявлена.
 - Logged-in key не містить довільні user meta; logged-in cache ризикований для session state і disabled за замовчуванням.
 - Vary-cookie/ignored-query misconfiguration може об'єднати різні відповіді в один key.
+- Request `no-cache`, `max-age=0` і `Pragma: no-cache` навмисно не змушують сервер повторно рендерити сторінку; для гарантованого request bypass використовувати `no-store` або configured exclusion.
 - Allowed `Set-Cookie` не replay-иться на HIT.
 - Page payload не має size cap і зберігається uncompressed.
 - TTL reduction не скорочує вже створені keys.
@@ -647,7 +706,8 @@ redis-cli PING
 - logged-in disabled/enabled і fake/revoked cookie;
 - excluded path/cookie/UA;
 - ignored, safe й unsafe query;
-- hard refresh/conditional/range = BYPASS;
+- normal/hard refresh із `no-cache`, `max-age=0` або `Pragma: no-cache` може дати HIT;
+- conditional/range/request `no-store` = BYPASS;
 - redirects/private headers/Set-Cookie/Vary/content encoding;
 - 404/search flags;
 - concurrent MISS lock і TTL;
@@ -661,5 +721,17 @@ redis-cli PING
 - success/failure cache;
 - package URL;
 - normalization для canonical, `-master` і custom installed directory.
+
+Для admin UI та локалізації:
+
+- direct links, порядок `page → warm → status` і активний `aria-current` для всіх п'яти вкладок;
+- `?tab=unknown` і `?tab[]=page` без TypeError повертають Redis-вкладку;
+- Save кожної вкладки не змінює дві інші групи, включно з password retain/replace/clear;
+- `warm` і `status` не містять Settings API form, а live PING не виконується на інших вкладках;
+- public standard/custom post types і taxonomies видимі та checked by default, unavailable attachment source disabled;
+- AJAX capability/nonce/malformed input, same-site URL signature та cross-origin fallback;
+- warm probe `HEAD HIT`, `HEAD MISS → GET MISS → HEAD HIT`, late BYPASS і repeated MISS;
+- `simple-redis-cache-uk.mo` завантажується для admin locale `uk`, а `en_US` показує source English;
+- у PO немає fuzzy/untranslated entries, а format placeholders збігаються з POT.
 
 Після будь-якої зміни release metadata синхронізувати `simple-redis-cache.php`, `readme.txt`, `README.md`, `AGENTS.md` та updater requirements.

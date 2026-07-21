@@ -34,7 +34,7 @@ final class Simple_Redis_Cache_Purger {
 					sprintf(
 						/* translators: %s: Redis connection error. */
 						__( 'Could not clear object cache: %s', 'simple-redis-cache' ),
-						$redis->error() ?: __( 'Redis is unavailable.', 'simple-redis-cache' )
+						$redis->display_error() ?: __( 'Redis is unavailable.', 'simple-redis-cache' )
 					)
 				);
 			} else {
@@ -59,7 +59,7 @@ final class Simple_Redis_Cache_Purger {
 					sprintf(
 						/* translators: %s: Redis connection error. */
 						__( 'Could not clear page cache: %s', 'simple-redis-cache' ),
-						$redis->error() ?: __( 'Redis is unavailable.', 'simple-redis-cache' )
+						$redis->display_error() ?: __( 'Redis is unavailable.', 'simple-redis-cache' )
 					)
 				);
 			} else {

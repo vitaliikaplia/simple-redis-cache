@@ -12,6 +12,7 @@ final class Simple_Redis_Cache_Page_Capture {
 	private array $context;
 	/** @var array<string, mixed> */
 	private array $page_config;
+	private bool $debug_header;
 	private bool $finalized = false;
 	private bool $released = false;
 
@@ -20,6 +21,7 @@ final class Simple_Redis_Cache_Page_Capture {
 		$this->context     = $context;
 		$config            = (array) ( $context['config'] ?? array() );
 		$this->page_config = (array) ( $config['page'] ?? array() );
+		$this->debug_header = ! empty( $context['debug_header'] ) || ! empty( $this->page_config['debug_header'] );
 	}
 
 	/** @param array<string, mixed> $context */
@@ -38,7 +40,7 @@ final class Simple_Redis_Cache_Page_Capture {
 		$capture = new self( $context );
 		register_shutdown_function( array( $capture, 'release_lock' ) );
 
-		if ( ! empty( $capture->page_config['debug_header'] ) && function_exists( 'add_action' ) ) {
+		if ( $capture->debug_header && function_exists( 'add_action' ) ) {
 			add_action( 'send_headers', array( $capture, 'send_debug_header' ), PHP_INT_MAX );
 		}
 

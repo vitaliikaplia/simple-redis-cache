@@ -78,7 +78,9 @@ final class Simple_Redis_Cache_Page_Request {
 		/*
 		 * A cached 200 response cannot safely implement HTTP preconditions or byte
 		 * ranges. Let WordPress/the web server produce the correct 304, 412, or 206.
-		 * Request cache directives also provide an explicit hard-refresh bypass.
+		 * An explicit request no-store directive also remains a bypass. Browser
+		 * reload directives such as no-cache, max-age=0, and Pragma: no-cache do
+		 * not bypass the server-side Redis cache.
 		 */
 		if ( self::bypasses_cache_by_request_headers() ) {
 			return null;
@@ -345,27 +347,14 @@ final class Simple_Redis_Cache_Page_Request {
 		foreach ( explode( ',', (string) $cache_control ) as $directive ) {
 			$parts = explode( '=', trim( $directive ), 2 );
 			$name  = strtolower( trim( $parts[0] ) );
-			if ( in_array( $name, array( 'no-cache', 'no-store' ), true ) ) {
+			if ( 'no-store' === $name ) {
 				return true;
-			}
-
-			if ( 'max-age' === $name && isset( $parts[1] ) ) {
-				$seconds = trim( trim( $parts[1] ), "\"'" );
-				if ( ctype_digit( $seconds ) && 0 === (int) $seconds ) {
-					return true;
-				}
 			}
 		}
 
 		$pragma = $_SERVER['HTTP_PRAGMA'] ?? '';
 		if ( ! is_scalar( $pragma ) ) {
 			return true;
-		}
-
-		foreach ( explode( ',', (string) $pragma ) as $directive ) {
-			if ( 'no-cache' === strtolower( trim( $directive ) ) ) {
-				return true;
-			}
 		}
 
 		return false;

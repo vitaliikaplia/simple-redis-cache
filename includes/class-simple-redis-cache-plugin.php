@@ -17,7 +17,7 @@ final class Simple_Redis_Cache_Plugin {
 		}
 		self::$initialized = true;
 
-		load_plugin_textdomain( 'simple-redis-cache', false, dirname( SIMPLE_REDIS_CACHE_BASENAME ) . '/languages' );
+		add_action( 'init', array( self::class, 'load_textdomain' ), 0 );
 
 		if ( is_multisite() ) {
 			add_action( 'admin_notices', array( self::class, 'multisite_notice' ) );
@@ -30,8 +30,14 @@ final class Simple_Redis_Cache_Plugin {
 		add_action( 'update_option_' . Simple_Redis_Cache_Config::OPTION, array( self::class, 'settings_updated' ), 10, 3 );
 	}
 
+	public static function load_textdomain(): void {
+		load_plugin_textdomain( 'simple-redis-cache', false, dirname( SIMPLE_REDIS_CACHE_BASENAME ) . '/languages' );
+	}
+
 	/** Refuse activation on multisite and initialize safe defaults/drop-ins. */
 	public static function activate( bool $network_wide = false ): void {
+		self::load_textdomain();
+
 		if ( is_multisite() ) {
 			if ( function_exists( 'deactivate_plugins' ) ) {
 				deactivate_plugins( SIMPLE_REDIS_CACHE_BASENAME, true, $network_wide );

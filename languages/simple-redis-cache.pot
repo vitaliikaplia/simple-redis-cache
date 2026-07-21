@@ -1,0 +1,904 @@
+# Copyright (C) 2026 Vitalii Kaplia
+# This file is distributed under the GPL-2.0-or-later.
+msgid ""
+msgstr ""
+"Project-Id-Version: Simple Redis Cache 0.1.1\n"
+"Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/simple-redis-cache\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"POT-Creation-Date: 2026-07-21T05:37:30+00:00\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"X-Generator: WP-CLI 2.12.0\n"
+"X-Domain: simple-redis-cache\n"
+
+#. Plugin Name of the plugin
+#: simple-redis-cache.php
+#: includes/class-simple-redis-cache-admin.php:37
+#: includes/class-simple-redis-cache-admin.php:228
+msgid "Simple Redis Cache"
+msgstr ""
+
+#. Description of the plugin
+#: simple-redis-cache.php
+msgid "Redis-only object cache and full-page HTML cache for WordPress."
+msgstr ""
+
+#. Author of the plugin
+#: simple-redis-cache.php
+msgid "Vitalii Kaplia"
+msgstr ""
+
+#. Author URI of the plugin
+#: simple-redis-cache.php
+msgid "https://kaplia.pro/"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:38
+msgid "Redis Cache"
+msgstr ""
+
+#. translators: %s: URL currently being warmed.
+#: includes/class-simple-redis-cache-admin.php:64
+#, php-format
+msgid "Warming: %s"
+msgstr ""
+
+#. translators: 1: processed URL count, 2: total URL count.
+#: includes/class-simple-redis-cache-admin.php:66
+#, php-format
+msgid "Processed %1$d of %2$d URLs."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:77
+msgid "Discovering public URLs…"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:78
+#: includes/class-simple-redis-cache-admin.php:373
+msgid "Select at least one source to warm."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:79
+msgid "No cacheable public URLs were found for the selected sources."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:82
+msgid "Cache warming completed successfully."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:83
+msgid "Cache warming completed with some URLs not cached."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:84
+msgid "Cache warming was stopped."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:85
+msgid "Could not prepare cache warming."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:86
+msgid "The frontend request failed."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:87
+#: includes/class-simple-redis-cache-warmer.php:524
+msgid "The frontend response did not contain a page-cache status."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:88
+#: includes/class-simple-redis-cache-warmer.php:189
+#: includes/class-simple-redis-cache-warmer.php:201
+#: includes/class-simple-redis-cache-warmer.php:212
+msgid "The page cache bypassed this URL."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:89
+#: includes/class-simple-redis-cache-warmer.php:216
+msgid "Redis did not return a cache HIT after the page was rendered."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:90
+msgid "Already cached"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:91
+msgid "Warmed now"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:92
+msgid "Bypassed"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:93
+msgid "Failed"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:94
+#: includes/class-simple-redis-cache-admin.php:323
+msgid "Unknown error."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:113
+#: includes/class-simple-redis-cache-admin.php:517
+#: includes/class-simple-redis-cache-admin.php:717
+msgid "Redis connection"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:115
+msgid "PhpRedis and one standalone Redis server are supported. Credentials are stored in the WordPress database."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:120
+msgid "Connection type"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:120
+msgid "Unix socket"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:121
+msgid "Host"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:121
+msgid "For example: 127.0.0.1. Ignored for Unix sockets."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:122
+msgid "Port"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:123
+msgid "Unix socket path"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:124
+msgid "Database"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:125
+msgid "ACL username"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:126
+msgid "Password"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:126
+msgid "Leave blank to retain the stored password when the option below is checked."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:127
+msgid "Stored password"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:128
+msgid "Connect timeout"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:128
+#: includes/class-simple-redis-cache-admin.php:129
+#: includes/class-simple-redis-cache-admin.php:158
+msgid "Seconds."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:129
+msgid "Read timeout"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:130
+msgid "Retry interval"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:130
+msgid "Milliseconds."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:131
+msgid "Persistent connection"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:135
+#: includes/class-simple-redis-cache-admin.php:718
+msgid "Object cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:137
+msgid "Stores WordPress Object Cache API values in Redis through object-cache.php."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:142
+msgid "Enable object cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:143
+msgid "Maximum TTL"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:143
+msgid "Seconds. A caller-provided shorter TTL remains unchanged; zero or a longer TTL is capped here."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:144
+msgid "Read object cache in wp-admin"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:144
+msgid "When disabled, normal wp-admin reads bypass Redis. Writes and invalidations still reach Redis; transients remain readable from Redis when no database mirror is enabled."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:145
+msgid "Database transient mirror"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:145
+msgid "Write transient and site-transient values to both Redis and the database, and read the database on a Redis miss."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:146
+msgid "Non-persistent groups"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:146
+msgid "One exact WordPress cache group per line."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:150
+#: includes/class-simple-redis-cache-admin.php:719
+msgid "HTML page cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:152
+msgid "Stores eligible public HTML responses in Redis through advanced-cache.php. No cached pages are written to disk."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:157
+msgid "Enable page cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:157
+msgid "Enabling this option also adds define( 'WP_CACHE', true ); to wp-config.php when needed."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:158
+msgid "Page TTL"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:159
+msgid "Cache logged-in users"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:159
+msgid "Disabled is safest. Logged-in variants are isolated by session when enabled."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:160
+msgid "Cache home page"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:161
+msgid "Cache posts, pages and CPTs"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:162
+msgid "Cache archives"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:163
+msgid "Cache search results"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:164
+msgid "Cache 404 responses"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:165
+msgid "Cache query strings"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:165
+msgid "Unknown query parameters bypass page cache unless this is enabled."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:166
+msgid "Ignored query parameters"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:166
+msgid "One name or prefix ending in * per line. These parameters are removed from the cache key."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:167
+msgid "Excluded paths"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:167
+msgid "One path pattern per line; * is supported."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:168
+msgid "Excluded request cookies"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:168
+msgid "A matching cookie bypasses page cache. One name or prefix per line."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:169
+msgid "Excluded user agents"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:169
+msgid "One substring per line."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:170
+msgid "Cookies that vary the cache key"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:170
+msgid "One cookie name per line. Useful for language cookies that safely select a page variant."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:171
+msgid "Allowed response Set-Cookie names"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:171
+msgid "Responses setting only these cookie names may be stored; Set-Cookie headers are never replayed from cache."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:172
+msgid "Debug response header"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:172
+msgid "Send X-Simple-Redis-Cache with HIT, MISS or BYPASS status."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:195
+msgid "The settings were not saved because the submitted section was invalid. Please reload the page and try again."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:229
+msgid "Redis-only object and full-page cache for a single WordPress site. Cache entries are isolated by WP_CACHE_KEY_SALT when it is defined."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:266
+msgid "Enabled"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:270
+msgid "Keep the currently stored password when the password field is blank"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:272
+msgid "A password is currently stored."
+msgstr ""
+
+#. translators: %s: Redis version.
+#: includes/class-simple-redis-cache-admin.php:314
+#, php-format
+msgid "Redis connection succeeded (Redis %s)."
+msgstr ""
+
+#. translators: %s: Redis version.
+#: includes/class-simple-redis-cache-admin.php:315
+msgid "Redis connection succeeded."
+msgstr ""
+
+#. translators: %s: Redis error.
+#: includes/class-simple-redis-cache-admin.php:322
+#, php-format
+msgid "Redis connection failed: %s"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:334
+msgid "You are not allowed to clear this cache."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:339
+#: includes/class-simple-redis-cache-purger.php:22
+msgid "Invalid cache purge scope."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:349
+msgid "All Redis caches were cleared."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:350
+msgid "Object cache was cleared."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:351
+msgid "HTML page cache was cleared."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:399
+msgid "The cache-warming URL could not be verified."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:413
+#: includes/class-simple-redis-cache-admin.php:415
+msgid "Caching"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:419
+msgid "Clear all"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:420
+msgid "Clear HTML page cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:421
+#: includes/class-simple-redis-cache-admin.php:533
+msgid "Clear object cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:422
+#: includes/class-simple-redis-cache-admin.php:612
+msgid "Warm cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:423
+#: includes/class-simple-redis-cache-admin.php:428
+msgid "Settings"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:466
+msgid "Simple Redis Cache requires the PhpRedis extension; caching will fail open until it is installed."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:473
+msgctxt "cache type in an admin notice"
+msgid "Object cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:474
+msgctxt "cache type in an admin notice"
+msgid "HTML page cache"
+msgstr ""
+
+#. translators: %s: localized cache type.
+#: includes/class-simple-redis-cache-admin.php:479
+#, php-format
+msgid "%s cannot start because another plugin owns its WordPress drop-in."
+msgstr ""
+
+#. translators: %s: localized cache type.
+#: includes/class-simple-redis-cache-admin.php:488
+#, php-format
+msgid "%s is enabled in settings, but its WordPress drop-in is not installed."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:498
+msgid "HTML page cache is enabled, but WP_CACHE is not true in the current request. Check wp-config.php; a newly added definition takes effect on the next request."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:509
+msgid "Installed by Simple Redis Cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:510
+msgid "Foreign drop-in (not modified)"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:511
+msgid "Not installed"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:514
+msgid "Status and diagnostics"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:516
+msgid "PhpRedis"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:516
+msgid "Available"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:516
+msgid "Missing"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:517
+msgid "Connected"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:517
+msgid "Unavailable"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:518
+msgid "Object drop-in"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:519
+msgid "Page drop-in"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:520
+msgid "WP_CACHE"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:520
+msgid "true"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:520
+msgid "not true"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:521
+msgid "Generated early config"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:521
+msgid "readable"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:521
+msgid "missing or unreadable"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:522
+msgid "Redis key prefix"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:522
+msgid "Define WP_CACHE_KEY_SALT in wp-config.php to control the leading prefix for every key."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:529
+msgid "Test saved connection"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:531
+msgid "Clear all cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:532
+msgid "Clear page cache"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:546
+#: includes/class-simple-redis-cache-admin.php:720
+msgid "Cache warming"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:547
+msgid "Select public WordPress content to request anonymously and store in the Redis HTML page cache. Existing cache entries are verified and left unchanged."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:550
+#: includes/class-simple-redis-cache-warmer.php:57
+msgid "Enable HTML page cache before warming it."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:555
+msgid "Select all"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:556
+msgid "Select none"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:561
+msgid "System pages"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:574
+msgid "Includes existing pagination for the posts, author and date archives."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:578
+msgid "Public post types"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:588
+#: includes/class-simple-redis-cache-admin.php:603
+msgid "Standard"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:588
+#: includes/class-simple-redis-cache-admin.php:603
+msgid "Custom"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:591
+msgid "WordPress attachment pages are disabled, so media URLs will not be warmed."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:594
+msgid "Each selection includes all public, non-password-protected singular items and its public archive with pagination when available."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:598
+msgid "Public taxonomies"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:606
+msgid "Each selection includes non-empty public term archives and their known pagination."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:610
+msgid "Warming generates the anonymous default-language variant. Keep this tab open until the process finishes."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:613
+msgid "Stop"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:649
+msgid "You are not allowed to manage Redis cache settings."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:657
+msgid "Cache warming accepts POST requests only."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:660
+msgid "You are not allowed to warm this cache."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:663
+msgid "The cache-warming security token is invalid or expired."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:721
+msgid "Status"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:738
+msgid "Cache settings sections"
+msgstr ""
+
+#: includes/class-simple-redis-cache-config.php:137
+msgid "The early cache configuration file is owned by another component and was not overwritten."
+msgstr ""
+
+#: includes/class-simple-redis-cache-config.php:142
+msgid "Could not write the early Redis cache configuration."
+msgstr ""
+
+#: includes/class-simple-redis-cache-config.php:151
+msgid "The early cache configuration changed during installation and was not overwritten."
+msgstr ""
+
+#: includes/class-simple-redis-cache-config.php:157
+msgid "Could not install the early Redis cache configuration."
+msgstr ""
+
+#: includes/class-simple-redis-cache-config.php:174
+msgid "The early cache configuration file is not owned by Simple Redis Cache and was not removed."
+msgstr ""
+
+#: includes/class-simple-redis-cache-config.php:178
+msgid "Could not remove the generated early Redis cache configuration."
+msgstr ""
+
+#. translators: %s: drop-in source path.
+#: includes/class-simple-redis-cache-dropins.php:64
+#, php-format
+msgid "The Simple Redis Cache drop-in template is not readable: %s"
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:74
+msgid "The Simple Redis Cache drop-in template is invalid."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:83
+msgid "The Simple Redis Cache drop-in loader placeholder is missing."
+msgstr ""
+
+#. translators: %s: existing drop-in path.
+#: includes/class-simple-redis-cache-dropins.php:93
+#, php-format
+msgid "Simple Redis Cache did not overwrite the foreign drop-in at %s. Disable the plugin that owns it or remove it manually."
+msgstr ""
+
+#. translators: %s: drop-in path.
+#: includes/class-simple-redis-cache-dropins.php:105
+#, php-format
+msgid "Could not write the temporary drop-in for %s."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:118
+msgid "The drop-in changed while Simple Redis Cache was installing it. No file was overwritten."
+msgstr ""
+
+#. translators: %s: target drop-in path.
+#: includes/class-simple-redis-cache-dropins.php:128
+#, php-format
+msgid "Could not install the drop-in at %s."
+msgstr ""
+
+#. translators: %s: target drop-in path.
+#: includes/class-simple-redis-cache-dropins.php:156
+#, php-format
+msgid "Could not remove the Simple Redis Cache drop-in at %s."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:191
+msgid "Page cache was enabled, but wp-config.php is not writable. Add define( 'WP_CACHE', true ); manually."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:197
+msgid "Could not read wp-config.php."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:212
+msgid "WP_CACHE uses a dynamic value in wp-config.php. Set it to true manually before enabling page cache."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:221
+msgid "WP_CACHE is already defined by a non-standard expression. Set it to true manually before enabling page cache."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:243
+msgid "Could not find a safe insertion point in wp-config.php. Add define( 'WP_CACHE', true ); manually."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:249
+msgid "Could not write a temporary wp-config.php file."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:261
+msgid "wp-config.php changed while it was being updated. No changes were made."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:268
+msgid "Could not update wp-config.php. Add define( 'WP_CACHE', true ); manually."
+msgstr ""
+
+#: includes/class-simple-redis-cache-dropins.php:314
+msgid "Unknown cache drop-in type."
+msgstr ""
+
+#: includes/class-simple-redis-cache-github-updater.php:97
+msgid "Redis-only persistent object caching and full-page HTML caching for a single-site WordPress installation."
+msgstr ""
+
+#: includes/class-simple-redis-cache-github-updater.php:98
+msgid "Includes Ukrainian localization, a tabbed settings screen, browser-reload page-cache hits, and updates from the public GitHub repository."
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:47
+msgid "Simple Redis Cache supports single-site WordPress installations only and was not activated."
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:48
+msgid "Plugin activation refused"
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:87
+msgid "Simple Redis Cache is disabled because this plugin supports single-site WordPress installations only."
+msgstr ""
+
+#: includes/class-simple-redis-cache-purger.php:18
+msgid "Simple Redis Cache supports single-site WordPress installations only."
+msgstr ""
+
+#. translators: %s: Redis connection error.
+#: includes/class-simple-redis-cache-purger.php:36
+#, php-format
+msgid "Could not clear object cache: %s"
+msgstr ""
+
+#: includes/class-simple-redis-cache-purger.php:37
+#: includes/class-simple-redis-cache-purger.php:62
+msgid "Redis is unavailable."
+msgstr ""
+
+#. translators: %s: Redis connection error.
+#: includes/class-simple-redis-cache-purger.php:61
+#, php-format
+msgid "Could not clear page cache: %s"
+msgstr ""
+
+#: includes/class-simple-redis-cache-purger.php:91
+msgid "Could not delete transient cache mirrors from the database."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:154
+msgid "The PhpRedis extension is not installed."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:155
+msgid "Redis host or socket path is empty."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:156
+msgid "Unable to connect to Redis."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:157
+msgid "Unable to disable the PhpRedis serializer."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:158
+msgid "Unable to disable PhpRedis compression."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:159
+msgid "Unable to clear the PhpRedis key prefix."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:160
+msgid "Redis authentication failed."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:161
+msgid "Unable to select the Redis database."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:162
+msgid "Redis returned an invalid cache generation."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:163
+msgid "Redis could not increment the cache generation."
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:33
+msgid "Homepage and posts page"
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:34
+msgid "Author archives"
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:35
+msgid "Date archives"
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:90
+msgid "Homepage URLs were skipped because home-page caching is disabled."
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:98
+msgid "Author archives were skipped because archive caching is disabled."
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:106
+msgid "Date archives were skipped because archive caching is disabled."
+msgstr ""
+
+#. translators: %s: post type or taxonomy label.
+#: includes/class-simple-redis-cache-warmer.php:115
+#: includes/class-simple-redis-cache-warmer.php:153
+#, php-format
+msgid "%s was skipped because it has no public frontend view."
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:122
+msgid "Media attachment pages were skipped because WordPress attachment pages are disabled."
+msgstr ""
+
+#. translators: %s: post type label.
+#: includes/class-simple-redis-cache-warmer.php:133
+#, php-format
+msgid "%s was skipped because the applicable page-cache types are disabled."
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:146
+msgid "Taxonomy archives were skipped because archive caching is disabled."
+msgstr ""
+
+#: includes/class-simple-redis-cache-warmer.php:178
+msgid "The generated URL is not a valid URL for this site."
+msgstr ""
+
+#. translators: %d: HTTP status code.
+#: includes/class-simple-redis-cache-warmer.php:517
+#, php-format
+msgid "The frontend returned HTTP %d."
+msgstr ""

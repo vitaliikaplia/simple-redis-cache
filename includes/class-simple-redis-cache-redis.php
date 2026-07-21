@@ -144,6 +144,27 @@ final class Simple_Redis_Cache_Redis {
 		return $this->error;
 	}
 
+	/**
+	 * Localize plugin-defined errors for normal WordPress UI. Raw PhpRedis
+	 * exception messages remain unchanged, and early drop-ins continue to use
+	 * error() without depending on the translation subsystem.
+	 */
+	public function display_error(): ?string {
+		return match ( $this->error ) {
+			'The PhpRedis extension is not installed.' => __( 'The PhpRedis extension is not installed.', 'simple-redis-cache' ),
+			'Redis host or socket path is empty.' => __( 'Redis host or socket path is empty.', 'simple-redis-cache' ),
+			'Unable to connect to Redis.' => __( 'Unable to connect to Redis.', 'simple-redis-cache' ),
+			'Unable to disable the PhpRedis serializer.' => __( 'Unable to disable the PhpRedis serializer.', 'simple-redis-cache' ),
+			'Unable to disable PhpRedis compression.' => __( 'Unable to disable PhpRedis compression.', 'simple-redis-cache' ),
+			'Unable to clear the PhpRedis key prefix.' => __( 'Unable to clear the PhpRedis key prefix.', 'simple-redis-cache' ),
+			'Redis authentication failed.' => __( 'Redis authentication failed.', 'simple-redis-cache' ),
+			'Unable to select the Redis database.' => __( 'Unable to select the Redis database.', 'simple-redis-cache' ),
+			'Redis returned an invalid cache generation.' => __( 'Redis returned an invalid cache generation.', 'simple-redis-cache' ),
+			'Redis could not increment the cache generation.' => __( 'Redis could not increment the cache generation.', 'simple-redis-cache' ),
+			default => $this->error,
+		};
+	}
+
 	public function ping(): bool {
 		try {
 			$client = $this->client();
