@@ -10,8 +10,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class Simple_Redis_Cache_Config {
 	public const OPTION = 'simple_redis_cache_settings';
 
-	/** @return array<string, mixed> */
-	public static function get(): array {
+	/** Return the stored option without defaults or object-cache mediation. */
+	public static function stored(): array {
 		/*
 		 * This option contains the connection details needed to repair or purge the
 		 * cache itself. Read it from the authoritative database instead of the
@@ -36,7 +36,57 @@ final class Simple_Redis_Cache_Config {
 			$stored = get_option( self::OPTION, array() );
 		}
 
-		return self::merge( Simple_Redis_Cache_Early_Config::defaults(), is_array( $stored ) ? $stored : array() );
+		return is_array( $stored ) ? $stored : array();
+	}
+
+	/** @return array<string, mixed> */
+	public static function get(): array {
+		return self::merge( Simple_Redis_Cache_Early_Config::defaults(), self::stored() );
+	}
+
+	/**
+	 * Return the plugin-owned configuration currently used by the early drop-ins.
+	 * A null result means that no trustworthy runtime config is available.
+	 * Pass true after a potentially blocking operation to discard the request-local
+	 * static cache and observe a concurrent atomic file replacement.
+	 *
+	 * @param bool $fresh
+	 * @return array<string, mixed>|null
+	 */
+	public static function runtime( bool $fresh = false ): ?array {
+		$path = Simple_Redis_Cache_Early_Config::path();
+		if ( ! self::owns_early_config( $path ) ) {
+			return null;
+		}
+		if ( $fresh ) {
+			Simple_Redis_Cache_Early_Config::reset();
+		}
+
+		return Simple_Redis_Cache_Early_Config::load();
+	}
+
+	/** Whether the persisted schema predates the code currently running. */
+	public static function needs_migration(): bool {
+		$stored = self::stored();
+		return (int) ( $stored['config_version'] ?? 0 ) < Simple_Redis_Cache_Early_Config::CONFIG_VERSION;
+	}
+
+	/**
+	 * Normalize an older stored schema through the current sanitizer.
+	 *
+	 * Future version-specific transforms belong here before sanitize(). A newer
+	 * stored schema is never downgraded by an older copy of the plugin.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function migrate(): ?array {
+		$stored  = self::stored();
+		$version = (int) ( $stored['config_version'] ?? 0 );
+		if ( $version >= Simple_Redis_Cache_Early_Config::CONFIG_VERSION ) {
+			return null;
+		}
+
+		return self::sanitize( self::merge( Simple_Redis_Cache_Early_Config::defaults(), $stored ) );
 	}
 
 	/**

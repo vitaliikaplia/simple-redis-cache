@@ -190,15 +190,17 @@ final class Simple_Redis_Cache_Redis {
 
 		try {
 			$value = $client->get( $key );
-			if ( false === $value || (int) $value < 1 ) {
-				$client->set( $key, '1', array( 'nx' ) );
+			if ( false === $value ) {
+				$client->set( $key, (string) self::new_generation(), array( 'nx' ) );
 				$value = $client->get( $key );
 			}
-			if ( false === $value || (int) $value < 1 ) {
+
+			$generation = self::parse_generation( $value );
+			if ( null === $generation ) {
 				throw new RuntimeException( 'Redis returned an invalid cache generation.' );
 			}
 
-			return (int) $value;
+			return $generation;
 		} catch ( Throwable $throwable ) {
 			$this->error = $throwable->getMessage();
 			return 1;
@@ -214,19 +216,57 @@ final class Simple_Redis_Cache_Redis {
 		$key = Simple_Redis_Cache_Early_Config::meta_key( $namespace . '-generation', $this->all_config );
 
 		try {
-			if ( false === $client->get( $key ) ) {
-				$client->set( $key, '1', array( 'nx' ) );
-			}
-
-			$generation = $client->incr( $key );
-			if ( false === $generation || (int) $generation < 1 ) {
+			/*
+			 * Initializing and incrementing must be one Redis operation. Otherwise an
+			 * eviction between GET/SET and INCR would recreate the key as 1, which can
+			 * make an older generation reachable again. Every missing object, page, or
+			 * group metadata key instead starts from a fresh random safe integer.
+			 */
+			$generation = $client->eval(
+				"if redis.call('exists', KEYS[1]) == 0 then redis.call('set', KEYS[1], ARGV[1]) end return redis.call('incr', KEYS[1])",
+				array( $key, (string) self::new_generation() ),
+				1
+			);
+			$generation = self::parse_generation( $generation );
+			if ( null === $generation ) {
 				throw new RuntimeException( 'Redis could not increment the cache generation.' );
 			}
 
-			return (int) $generation;
+			return $generation;
 		} catch ( Throwable $throwable ) {
 			$this->error = $throwable->getMessage();
 			return false;
 		}
+	}
+
+	/**
+	 * Generate a positive Redis integer with ample INCR headroom. On 64-bit PHP,
+	 * the 40–52 bit range also stays exactly representable by common tooling. A
+	 * 32-bit runtime stays below 2^30, leaving more than a billion safe INCRs.
+	 */
+	private static function new_generation(): int {
+		if ( PHP_INT_SIZE >= 8 ) {
+			return random_int( 1099511627776, 4503599627370495 );
+		}
+
+		return random_int( 1048576, 1073741823 );
+	}
+
+	/** @param mixed $value */
+	private static function parse_generation( mixed $value ): ?int {
+		if ( is_int( $value ) ) {
+			return $value > 0 ? $value : null;
+		}
+
+		if ( ! is_string( $value ) || ! preg_match( '/^[1-9][0-9]*$/D', $value ) ) {
+			return null;
+		}
+
+		$generation = (int) $value;
+		if ( $generation < 1 || (string) $generation !== $value ) {
+			return null;
+		}
+
+		return $generation;
 	}
 }

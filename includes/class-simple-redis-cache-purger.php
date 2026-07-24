@@ -39,15 +39,20 @@ final class Simple_Redis_Cache_Purger {
 				);
 			} else {
 				$result['object_generation'] = $generation;
-			}
 
-			$deleted = self::delete_transient_mirrors();
-			if ( is_wp_error( $deleted ) ) {
-				foreach ( $deleted->get_error_messages() as $message ) {
-					$errors->add( 'src_transient_cleanup_failed', $message );
+				/*
+				 * Do not leave a Redis generation active while deleting its database
+				 * fallback. If Redis invalidation failed, retain the DB copy and report
+				 * the failure instead of performing a surprising partial purge.
+				 */
+				$deleted = self::delete_transient_mirrors();
+				if ( is_wp_error( $deleted ) ) {
+					foreach ( $deleted->get_error_messages() as $message ) {
+						$errors->add( 'src_transient_cleanup_failed', $message );
+					}
+				} else {
+					$result['db_rows_deleted'] = $deleted;
 				}
-			} else {
-				$result['db_rows_deleted'] = $deleted;
 			}
 		}
 

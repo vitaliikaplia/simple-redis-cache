@@ -123,7 +123,11 @@ final class Simple_Redis_Cache_Page_Request {
 		}
 
 		$decoded_path = rawurldecode( $path );
-		if ( self::is_system_path( $decoded_path ) || self::matches_path_list( $decoded_path, (array) ( $page['excluded_paths'] ?? array() ) ) ) {
+		if (
+			preg_match( '/[\x00-\x1F\x7F]/', $decoded_path ) ||
+			self::is_system_path( $decoded_path ) ||
+			self::matches_path_list( $decoded_path, (array) ( $page['excluded_paths'] ?? array() ) )
+		) {
 			return null;
 		}
 

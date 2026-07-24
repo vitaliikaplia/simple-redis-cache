@@ -95,7 +95,7 @@ final class Simple_Redis_Cache_GitHub_Updater {
 			'download_link' => $remote_data['package'] ?? $this->get_package_url(),
 			'sections'      => array(
 				'description' => '<p>' . esc_html__( 'Redis-only persistent object caching and full-page HTML caching for a single-site WordPress installation.', 'simple-redis-cache' ) . '</p>',
-				'changelog'   => '<p>' . esc_html__( 'Includes Ukrainian localization, a tabbed settings screen, browser-reload page-cache hits, and updates from the public GitHub repository.', 'simple-redis-cache' ) . '</p>',
+				'changelog'   => '<p>' . esc_html__( 'Version 0.2.0 adds settings-aware cache invalidation, safer generation recovery and purge confirmation, expanded diagnostics, hardened manual warming, and focused regression tests.', 'simple-redis-cache' ) . '</p>',
 			),
 		);
 	}

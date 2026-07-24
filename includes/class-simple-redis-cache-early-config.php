@@ -10,6 +10,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class Simple_Redis_Cache_Early_Config {
+	public const CONFIG_VERSION = 2;
+
 	/** @var array<string, mixed>|null */
 	private static ?array $config = null;
 
@@ -20,7 +22,7 @@ final class Simple_Redis_Cache_Early_Config {
 	 */
 	public static function defaults(): array {
 		return array(
-			'config_version' => 1,
+			'config_version' => self::CONFIG_VERSION,
 			'redis'          => array(
 				'scheme'         => 'tcp',
 				'host'           => '127.0.0.1',

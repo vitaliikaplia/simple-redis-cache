@@ -399,16 +399,98 @@ final class Simple_Redis_Cache_Warmer {
 				break;
 			}
 
+			$archive_counts = self::taxonomy_archive_counts( $taxonomy, $terms );
 			foreach ( $terms as $term ) {
 				$link = get_term_link( $term, $taxonomy );
 				if ( ! is_wp_error( $link ) ) {
-					self::add_archive_with_pagination( $link, max( 0, (int) $term->count ), $posts_per_page, $add_url );
+					$term_taxonomy_id = max( 0, (int) ( $term->term_taxonomy_id ?? 0 ) );
+					$total            = array_key_exists( $term_taxonomy_id, $archive_counts )
+						? $archive_counts[ $term_taxonomy_id ]
+						: max( 0, (int) $term->count );
+					self::add_archive_with_pagination( $link, $total, $posts_per_page, $add_url );
 				}
 			}
 
 			$count   = count( $terms );
 			$offset += $count;
 		} while ( self::QUERY_BATCH_SIZE === $count );
+	}
+
+	/**
+	 * Count public, non-password-protected objects for a bounded batch of term
+	 * archives. Core term counts may include password-protected posts and object
+	 * types that cannot appear in an anonymous taxonomy query, which can produce
+	 * non-existent pagination URLs. A single grouped query per discovery batch
+	 * avoids an unbounded WP_Query for every term.
+	 *
+	 * @param WP_Term[] $terms
+	 * @return array<int, int> Counts keyed by term_taxonomy_id.
+	 */
+	private static function taxonomy_archive_counts( string $taxonomy, array $terms ): array {
+		global $wpdb;
+
+		$taxonomy_object = get_taxonomy( $taxonomy );
+		if (
+			! $taxonomy_object instanceof WP_Taxonomy ||
+			! isset( $wpdb->posts, $wpdb->term_relationships )
+		) {
+			return array();
+		}
+
+		$term_taxonomy_ids = array();
+		foreach ( $terms as $term ) {
+			$term_taxonomy_id = max( 0, (int) ( $term->term_taxonomy_id ?? 0 ) );
+			if ( $term_taxonomy_id > 0 ) {
+				$term_taxonomy_ids[] = $term_taxonomy_id;
+			}
+		}
+		$term_taxonomy_ids = array_values( array_unique( $term_taxonomy_ids ) );
+
+		$post_types = array();
+		foreach ( (array) $taxonomy_object->object_type as $post_type ) {
+			$object = get_post_type_object( (string) $post_type );
+			if (
+				$object instanceof WP_Post_Type &&
+				! empty( $object->public ) &&
+				empty( $object->exclude_from_search ) &&
+				is_post_type_viewable( $object )
+			) {
+				$post_types[] = $object->name;
+			}
+		}
+		$post_types = array_values( array_unique( $post_types ) );
+		$statuses   = self::public_statuses();
+
+		if ( empty( $term_taxonomy_ids ) || empty( $post_types ) || empty( $statuses ) ) {
+			return array();
+		}
+
+		$term_placeholders   = implode( ', ', array_fill( 0, count( $term_taxonomy_ids ), '%d' ) );
+		$type_placeholders   = implode( ', ', array_fill( 0, count( $post_types ), '%s' ) );
+		$status_placeholders = implode( ', ', array_fill( 0, count( $statuses ), '%s' ) );
+		$sql                 = "SELECT relationships.term_taxonomy_id, COUNT(DISTINCT relationships.object_id) AS total
+			FROM {$wpdb->term_relationships} AS relationships
+			INNER JOIN {$wpdb->posts} AS posts ON posts.ID = relationships.object_id
+			WHERE relationships.term_taxonomy_id IN ({$term_placeholders})
+				AND posts.post_type IN ({$type_placeholders})
+				AND posts.post_status IN ({$status_placeholders})
+				AND posts.post_password = ''
+			GROUP BY relationships.term_taxonomy_id";
+		$params              = array_merge( $term_taxonomy_ids, $post_types, $statuses );
+		$rows                = $wpdb->get_results( $wpdb->prepare( $sql, $params ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		if ( ! is_array( $rows ) || '' !== (string) $wpdb->last_error ) {
+			return array();
+		}
+		$counts = array_fill_keys( $term_taxonomy_ids, 0 );
+
+		foreach ( $rows as $row ) {
+			$term_taxonomy_id = max( 0, (int) ( $row->term_taxonomy_id ?? 0 ) );
+			if ( isset( $counts[ $term_taxonomy_id ] ) ) {
+				$counts[ $term_taxonomy_id ] = max( 0, (int) ( $row->total ?? 0 ) );
+			}
+		}
+
+		return $counts;
 	}
 
 	/** @param callable(string):void $add_url */

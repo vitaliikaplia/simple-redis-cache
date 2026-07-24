@@ -19,14 +19,18 @@
 	const errorsNode = document.getElementById( 'src-warm-errors' );
 	const strings = config.strings;
 	const maxVisibleErrors = 100;
+	const requestTimeout = Math.max( 1000, Number( config.requestTimeout ) || 30000 );
 	let controller = null;
 	let running = false;
+	let visibleIssueCount = 0;
+	let hiddenIssueCount = 0;
+	let hiddenIssueNode = null;
 
 	function format( template, values ) {
 		let output = String( template );
 		values.forEach( ( value, index ) => {
-			output = output.replace( `%${ index + 1 }$d`, String( value ) );
-			output = output.replace( '%s', String( value ) );
+			output = output.replace( new RegExp( `%${ index + 1 }\\$[ds]`, 'g' ), String( value ) );
+			output = output.replace( /%[ds]/, String( value ) );
 		} );
 		return output;
 	}
@@ -44,13 +48,25 @@
 	}
 
 	function addIssue( message ) {
-		if ( errorsNode.children.length >= maxVisibleErrors ) {
+		if ( visibleIssueCount >= maxVisibleErrors ) {
+			hiddenIssueCount++;
+			if ( ! hiddenIssueNode ) {
+				hiddenIssueNode = document.createElement( 'li' );
+				hiddenIssueNode.className = 'src-warm-hidden-issues';
+				errorsNode.appendChild( hiddenIssueNode );
+			}
+			hiddenIssueNode.textContent = format(
+				strings.moreIssues || '%d more issues not shown.',
+				[ hiddenIssueCount ]
+			);
+			errorsNode.hidden = false;
 			return;
 		}
 
 		const item = document.createElement( 'li' );
 		item.textContent = message;
 		errorsNode.appendChild( item );
+		visibleIssueCount++;
 		errorsNode.hidden = false;
 	}
 
@@ -58,6 +74,9 @@
 		clearNotice();
 		errorsNode.replaceChildren();
 		errorsNode.hidden = true;
+		visibleIssueCount = 0;
+		hiddenIssueCount = 0;
+		hiddenIssueNode = null;
 		progress.value = 0;
 		progress.max = 1;
 		progressText.textContent = '';
@@ -107,36 +126,63 @@
 	}
 
 	async function requestStatus( url, method, signal ) {
-		const response = await fetch( url, {
-			method,
-			credentials: 'omit',
-			cache: 'reload',
-			redirect: 'follow',
-			referrerPolicy: 'no-referrer',
-			headers: {
-				Accept: 'text/html,application/xhtml+xml',
-				'X-Simple-Redis-Cache-Warm': '1',
-			},
-			signal,
-		} );
+		const requestController = new AbortController();
+		let timedOut = false;
+		const abortRequest = () => requestController.abort();
+		const timeoutId = window.setTimeout( () => {
+			timedOut = true;
+			requestController.abort();
+		}, requestTimeout );
 
-		if ( 'GET' === method ) {
-			await response.arrayBuffer();
+		if ( signal.aborted ) {
+			abortRequest();
+		} else {
+			signal.addEventListener( 'abort', abortRequest, { once: true } );
 		}
 
-		if ( response.redirected ) {
-			return { status: '', httpStatus: response.status, error: strings.requestFailed };
-		}
-		if ( response.status < 200 || response.status >= 300 ) {
-			return { status: '', httpStatus: response.status, error: `${ strings.requestFailed } HTTP ${ response.status }` };
-		}
+		try {
+			const response = await fetch( url, {
+				method,
+				credentials: 'omit',
+				cache: 'reload',
+				redirect: 'follow',
+				referrerPolicy: 'no-referrer',
+				headers: {
+					Accept: 'text/html,application/xhtml+xml',
+					'X-Simple-Redis-Cache-Warm': '1',
+				},
+				signal: requestController.signal,
+			} );
 
-		const status = String( response.headers.get( 'X-Simple-Redis-Cache' ) || '' ).toUpperCase();
-		if ( ! [ 'HIT', 'MISS', 'BYPASS' ].includes( status ) ) {
-			return { status: '', httpStatus: response.status, error: strings.missingStatus };
-		}
+			if ( 'GET' === method ) {
+				await response.arrayBuffer();
+			}
 
-		return { status, httpStatus: response.status, error: '' };
+			if ( response.redirected ) {
+				return { status: '', httpStatus: response.status, error: strings.requestFailed };
+			}
+			if ( response.status < 200 || response.status >= 300 ) {
+				return { status: '', httpStatus: response.status, error: `${ strings.requestFailed } HTTP ${ response.status }` };
+			}
+
+			const status = String( response.headers.get( 'X-Simple-Redis-Cache' ) || '' ).toUpperCase();
+			if ( ! [ 'HIT', 'MISS', 'BYPASS' ].includes( status ) ) {
+				return { status: '', httpStatus: response.status, error: strings.missingStatus };
+			}
+
+			return { status, httpStatus: response.status, error: '' };
+		} catch ( error ) {
+			if ( signal.aborted ) {
+				throw error;
+			}
+			if ( timedOut ) {
+				throw new Error( strings.requestTimedOut || strings.requestFailed );
+			}
+			throw error;
+		} finally {
+			window.clearTimeout( timeoutId );
+			signal.removeEventListener( 'abort', abortRequest );
+		}
 	}
 
 	function resultFromStatus( response ) {
