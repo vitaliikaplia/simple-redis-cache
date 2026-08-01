@@ -42,7 +42,8 @@ try {
 
 $object_key = Simple_Redis_Cache_Early_Config::meta_key( 'object-generation', $config );
 $page_key   = Simple_Redis_Cache_Early_Config::meta_key( 'page-generation', $config );
-$keys       = array( $object_key, $page_key );
+$page_versions_key = Simple_Redis_Cache_Early_Config::page_content_versions_key( $config );
+$keys       = array( $object_key, $page_key, $page_versions_key );
 $assert     = static function ( bool $condition, string $message ): void {
 	if ( ! $condition ) {
 		throw new RuntimeException( $message );
@@ -67,14 +68,28 @@ try {
 	$object_after = (int) $probe->get( $object_key );
 	$page_change  = $object_change;
 	$page_change['page']['ttl'] = 7200;
+	$probe->hSet( $page_versions_key, 'post:123', str_repeat( 'a', 32 ) );
 	$method->invoke( null, $object_change, $page_change );
 	$assert( $object_after === (int) $probe->get( $object_key ), 'Page policy unexpectedly invalidated object generation.' );
 	$assert( $page_before + 1 === (int) $probe->get( $page_key ), 'Page policy did not invalidate page generation.' );
+	$assert( ! $probe->exists( $page_versions_key ), 'Page generation bump did not reset per-resource content versions.' );
+
+	$page_after = (int) $probe->get( $page_key );
+	$auto_purge = $page_change;
+	$auto_purge['page']['invalidate_on_post_update'] = true;
+	$method->invoke( null, $page_change, $auto_purge );
+	$assert( $page_after + 1 === (int) $probe->get( $page_key ), 'Post-update invalidation policy did not invalidate page generation.' );
+
+	$page_after = (int) $probe->get( $page_key );
+	$term_auto_purge = $auto_purge;
+	$term_auto_purge['page']['invalidate_term_archives_on_post_update'] = true;
+	$method->invoke( null, $auto_purge, $term_auto_purge );
+	$assert( $page_after + 1 === (int) $probe->get( $page_key ), 'Taxonomy-archive invalidation policy did not invalidate page generation.' );
 
 	$page_after  = (int) $probe->get( $page_key );
-	$debug_only  = $page_change;
+	$debug_only  = $term_auto_purge;
 	$debug_only['page']['debug_header'] = true;
-	$method->invoke( null, $page_change, $debug_only );
+	$method->invoke( null, $term_auto_purge, $debug_only );
 	$assert( $object_after === (int) $probe->get( $object_key ), 'Debug-header change invalidated object generation.' );
 	$assert( $page_after === (int) $probe->get( $page_key ), 'Debug-header change invalidated page generation.' );
 

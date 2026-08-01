@@ -3,11 +3,11 @@
 # Ukrainian translation of Simple Redis Cache.
 msgid ""
 msgstr ""
-"Project-Id-Version: Simple Redis Cache 0.2.0\n"
+"Project-Id-Version: Simple Redis Cache 0.3.0\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/simple-redis-"
 "cache\n"
-"POT-Creation-Date: 2026-07-24T19:40:41+00:00\n"
-"PO-Revision-Date: 2026-07-24 21:20+0300\n"
+"POT-Creation-Date: 2026-08-01T15:34:26+00:00\n"
+"PO-Revision-Date: 2026-08-01 18:34+0300\n"
 "Last-Translator: Vitalii Kaplia\n"
 "Language-Team: Ukrainian\n"
 "Language: uk\n"
@@ -21,7 +21,7 @@ msgstr ""
 
 #. Plugin Name of the plugin
 #: simple-redis-cache.php includes/class-simple-redis-cache-admin.php:38
-#: includes/class-simple-redis-cache-admin.php:235
+#: includes/class-simple-redis-cache-admin.php:237
 msgid "Simple Redis Cache"
 msgstr "Simple Redis Cache"
 
@@ -63,7 +63,7 @@ msgid "Discovering public URLs…"
 msgstr "Пошук публічних URL…"
 
 #: includes/class-simple-redis-cache-admin.php:80
-#: includes/class-simple-redis-cache-admin.php:407
+#: includes/class-simple-redis-cache-admin.php:409
 msgid "Select at least one source to warm."
 msgstr "Виберіть принаймні одне джерело для прогріву."
 
@@ -130,7 +130,7 @@ msgid "Failed"
 msgstr "Не вдалося"
 
 #: includes/class-simple-redis-cache-admin.php:97
-#: includes/class-simple-redis-cache-admin.php:350
+#: includes/class-simple-redis-cache-admin.php:352
 msgid "Unknown error."
 msgstr "Невідома помилка."
 
@@ -141,8 +141,8 @@ msgid "%d more issues not shown."
 msgstr "Ще %d проблем не показано."
 
 #: includes/class-simple-redis-cache-admin.php:118
-#: includes/class-simple-redis-cache-admin.php:557
-#: includes/class-simple-redis-cache-admin.php:957
+#: includes/class-simple-redis-cache-admin.php:559
+#: includes/class-simple-redis-cache-admin.php:959
 msgid "Redis connection"
 msgstr "Підключення до Redis"
 
@@ -239,7 +239,7 @@ msgid "Persistent connection"
 msgstr "Постійне підключення"
 
 #: includes/class-simple-redis-cache-admin.php:140
-#: includes/class-simple-redis-cache-admin.php:958
+#: includes/class-simple-redis-cache-admin.php:960
 msgid "Object cache"
 msgstr "Об'єктний кеш"
 
@@ -300,7 +300,7 @@ msgid "One exact WordPress cache group per line."
 msgstr "По одній точній назві групи кешу WordPress у кожному рядку."
 
 #: includes/class-simple-redis-cache-admin.php:155
-#: includes/class-simple-redis-cache-admin.php:959
+#: includes/class-simple-redis-cache-admin.php:961
 msgid "HTML page cache"
 msgstr "Кеш HTML-сторінок"
 
@@ -331,41 +331,71 @@ msgid "Page TTL"
 msgstr "TTL сторінки"
 
 #: includes/class-simple-redis-cache-admin.php:164
+msgid "Clear a page's cache when it is updated"
+msgstr "Очищати кеш сторінки при її оновленні"
+
+#: includes/class-simple-redis-cache-admin.php:164
+msgid ""
+"Invalidates only the updated post, page or custom post type and all "
+"translations detected through WPML or Polylang. Unrelated home, archive and "
+"other derived pages are not cleared."
+msgstr ""
+"Інвалідує лише оновлений запис, сторінку або користувацький тип запису та "
+"всі переклади, знайдені через WPML або Polylang. Головна, архіви та інші "
+"похідні сторінки, які не є безпосередньо оновленою сторінкою, не очищуються."
+
+#: includes/class-simple-redis-cache-admin.php:165
+msgid "Clear related taxonomy archives when a post is updated"
+msgstr "Очищати кеш пов'язаних архівів таксономій при оновленні запису"
+
+#: includes/class-simple-redis-cache-admin.php:165
+msgid ""
+"Invalidates archives of current, previous and new assigned terms in public "
+"standard and custom taxonomies, including hierarchical parents and terms "
+"assigned to WPML or Polylang translations. Unrelated taxonomy archives "
+"remain cached."
+msgstr ""
+"Інвалідує архіви поточних, попередніх і нових призначених термів у публічних "
+"стандартних і користувацьких таксономіях, включно з батьківськими термами "
+"ієрархії та термами, призначеними перекладам WPML або Polylang. Непов'язані "
+"архіви таксономій залишаються в кеші."
+
+#: includes/class-simple-redis-cache-admin.php:166
 msgid "Cache logged-in users"
 msgstr "Кешувати сторінки авторизованих користувачів"
 
-#: includes/class-simple-redis-cache-admin.php:164
+#: includes/class-simple-redis-cache-admin.php:166
 msgid ""
 "Disabled is safest. Logged-in variants are isolated by session when enabled."
 msgstr ""
 "Найбезпечніше залишити вимкненим. Після ввімкнення варіанти для "
 "авторизованих користувачів ізолюються за сесією."
 
-#: includes/class-simple-redis-cache-admin.php:165
+#: includes/class-simple-redis-cache-admin.php:167
 msgid "Cache home page"
 msgstr "Кешувати головну сторінку"
 
-#: includes/class-simple-redis-cache-admin.php:166
+#: includes/class-simple-redis-cache-admin.php:168
 msgid "Cache posts, pages and CPTs"
 msgstr "Кешувати дописи, сторінки та власні типи записів"
 
-#: includes/class-simple-redis-cache-admin.php:167
+#: includes/class-simple-redis-cache-admin.php:169
 msgid "Cache archives"
 msgstr "Кешувати архіви"
 
-#: includes/class-simple-redis-cache-admin.php:168
+#: includes/class-simple-redis-cache-admin.php:170
 msgid "Cache search results"
 msgstr "Кешувати результати пошуку"
 
-#: includes/class-simple-redis-cache-admin.php:169
+#: includes/class-simple-redis-cache-admin.php:171
 msgid "Cache 404 responses"
 msgstr "Кешувати відповіді 404"
 
-#: includes/class-simple-redis-cache-admin.php:170
+#: includes/class-simple-redis-cache-admin.php:172
 msgid "Cache query strings"
 msgstr "Кешувати рядки запиту"
 
-#: includes/class-simple-redis-cache-admin.php:170
+#: includes/class-simple-redis-cache-admin.php:172
 msgid ""
 "Non-ignored query parameters normally bypass page cache unless this is "
 "enabled; supported search parameters are a limited exception. Built-in "
@@ -375,11 +405,11 @@ msgstr ""
 "якщо цю опцію не ввімкнено; підтримувані параметри пошуку є обмеженим "
 "винятком. Вбудовані небезпечні параметри завжди оминають кеш."
 
-#: includes/class-simple-redis-cache-admin.php:171
+#: includes/class-simple-redis-cache-admin.php:173
 msgid "Ignored query parameters"
 msgstr "Ігноровані параметри запиту"
 
-#: includes/class-simple-redis-cache-admin.php:171
+#: includes/class-simple-redis-cache-admin.php:173
 msgid ""
 "One exact name or wildcard pattern per line; * and ? are supported. Matching "
 "non-sensitive parameters are removed from the cache key; built-in unsafe "
@@ -389,19 +419,19 @@ msgstr ""
 "безпечні параметри вилучаються з ключа кешу; вбудовані небезпечні імена "
 "ігнорувати не можна."
 
-#: includes/class-simple-redis-cache-admin.php:172
+#: includes/class-simple-redis-cache-admin.php:174
 msgid "Excluded paths"
 msgstr "Виключені шляхи"
 
-#: includes/class-simple-redis-cache-admin.php:172
+#: includes/class-simple-redis-cache-admin.php:174
 msgid "One path pattern per line; * and ? are supported."
 msgstr "Один шаблон шляху на рядок; підтримуються * і ?."
 
-#: includes/class-simple-redis-cache-admin.php:173
+#: includes/class-simple-redis-cache-admin.php:175
 msgid "Excluded request cookies"
 msgstr "Виключені cookie запиту"
 
-#: includes/class-simple-redis-cache-admin.php:173
+#: includes/class-simple-redis-cache-admin.php:175
 msgid ""
 "Matching cookies normally bypass page cache. Vary-cookie entries and the "
 "default WordPress auth prefixes when logged-in caching is enabled use "
@@ -414,21 +444,21 @@ msgstr ""
 "ізольовані варіанти. У кожному рядку вкажіть точне ім'я, шаблон або "
 "звичайний префікс, що закінчується символом _."
 
-#: includes/class-simple-redis-cache-admin.php:174
+#: includes/class-simple-redis-cache-admin.php:176
 msgid "Excluded user agents"
 msgstr "Виключені User-Agent"
 
-#: includes/class-simple-redis-cache-admin.php:174
+#: includes/class-simple-redis-cache-admin.php:176
 msgid "One case-insensitive substring or wildcard pattern per line."
 msgstr ""
 "Один нечутливий до регістру підрядок або шаблон із символами підстановки на "
 "рядок."
 
-#: includes/class-simple-redis-cache-admin.php:175
+#: includes/class-simple-redis-cache-admin.php:177
 msgid "Cookies that vary the cache key"
 msgstr "Cookie, що змінюють ключ кешу"
 
-#: includes/class-simple-redis-cache-admin.php:175
+#: includes/class-simple-redis-cache-admin.php:177
 msgid ""
 "One cookie name per line. Useful for language cookies that safely select a "
 "page variant."
@@ -436,11 +466,11 @@ msgstr ""
 "По одній назві cookie в кожному рядку. Корисно для мовних cookie, які "
 "безпечно обирають варіант сторінки."
 
-#: includes/class-simple-redis-cache-admin.php:176
+#: includes/class-simple-redis-cache-admin.php:178
 msgid "Allowed response Set-Cookie names"
 msgstr "Дозволені назви Set-Cookie у відповіді"
 
-#: includes/class-simple-redis-cache-admin.php:176
+#: includes/class-simple-redis-cache-admin.php:178
 msgid ""
 "Responses setting only these cookie names may be stored; Set-Cookie headers "
 "are never replayed from cache."
@@ -448,15 +478,15 @@ msgstr ""
 "Можна зберігати відповіді, які встановлюють лише ці cookie; заголовки Set-"
 "Cookie ніколи не відтворюються з кешу."
 
-#: includes/class-simple-redis-cache-admin.php:177
+#: includes/class-simple-redis-cache-admin.php:179
 msgid "Debug response header"
 msgstr "Діагностичний заголовок відповіді"
 
-#: includes/class-simple-redis-cache-admin.php:177
+#: includes/class-simple-redis-cache-admin.php:179
 msgid "Send X-Simple-Redis-Cache with HIT, MISS or BYPASS status."
 msgstr "Надсилати X-Simple-Redis-Cache зі статусом HIT, MISS або BYPASS."
 
-#: includes/class-simple-redis-cache-admin.php:200
+#: includes/class-simple-redis-cache-admin.php:202
 msgid ""
 "The settings were not saved because the submitted section was invalid. "
 "Please reload the page and try again."
@@ -464,7 +494,7 @@ msgstr ""
 "Налаштування не збережено, оскільки надісланий розділ недійсний. "
 "Перезавантажте сторінку та повторіть спробу."
 
-#: includes/class-simple-redis-cache-admin.php:236
+#: includes/class-simple-redis-cache-admin.php:238
 msgid ""
 "Redis-only object and full-page cache for a single WordPress site. Cache "
 "entries use a non-empty WP_CACHE_KEY_SALT when defined, or a generated per-"
@@ -474,20 +504,20 @@ msgstr ""
 "WordPress. Записи кешу використовують непорожній WP_CACHE_KEY_SALT, якщо "
 "його визначено, або згенерований резервний префікс сайту."
 
-#: includes/class-simple-redis-cache-admin.php:275
+#: includes/class-simple-redis-cache-admin.php:277
 msgid "Enabled"
 msgstr "Увімкнено"
 
-#: includes/class-simple-redis-cache-admin.php:279
+#: includes/class-simple-redis-cache-admin.php:281
 msgid "Keep the currently stored password when the password field is blank"
 msgstr "Зберегти поточний пароль, якщо поле пароля порожнє"
 
-#: includes/class-simple-redis-cache-admin.php:281
+#: includes/class-simple-redis-cache-admin.php:283
 msgid "A password is currently stored."
 msgstr "Пароль уже збережено."
 
 #. translators: %s: Redis read/write/delete test error.
-#: includes/class-simple-redis-cache-admin.php:319
+#: includes/class-simple-redis-cache-admin.php:321
 #, php-format
 msgid "Redis connected, but the isolated write/read/delete test failed: %s"
 msgstr ""
@@ -495,7 +525,7 @@ msgstr ""
 "видалення не вдалася: %s"
 
 #. translators: %s: Redis version.
-#: includes/class-simple-redis-cache-admin.php:329
+#: includes/class-simple-redis-cache-admin.php:331
 #, php-format
 msgid ""
 "Redis connection and isolated write/read/delete test succeeded (Redis %s)."
@@ -504,14 +534,14 @@ msgstr ""
 "успішні (Redis %s)."
 
 #. translators: %s: Redis version.
-#: includes/class-simple-redis-cache-admin.php:330
+#: includes/class-simple-redis-cache-admin.php:332
 msgid "Redis connection and isolated write/read/delete test succeeded."
 msgstr ""
 "Підключення до Redis та ізольована перевірка запису, читання й видалення "
 "успішні."
 
 #. translators: %s: Redis maxmemory policy.
-#: includes/class-simple-redis-cache-admin.php:338
+#: includes/class-simple-redis-cache-admin.php:340
 #, php-format
 msgid ""
 "Redis uses %s, which may evict persistent cache-generation metadata. Prefer "
@@ -521,69 +551,69 @@ msgstr ""
 "поколінь кешу. Бажано використовувати noeviction або політику volatile-*."
 
 #. translators: %s: Redis error.
-#: includes/class-simple-redis-cache-admin.php:349
+#: includes/class-simple-redis-cache-admin.php:351
 #, php-format
 msgid "Redis connection failed: %s"
 msgstr "Не вдалося підключитися до Redis: %s"
 
-#: includes/class-simple-redis-cache-admin.php:361
+#: includes/class-simple-redis-cache-admin.php:363
 msgid "You are not allowed to clear this cache."
 msgstr "Вам не дозволено очищувати цей кеш."
 
-#: includes/class-simple-redis-cache-admin.php:367
+#: includes/class-simple-redis-cache-admin.php:369
 #: includes/class-simple-redis-cache-purger.php:22
 msgid "Invalid cache purge scope."
 msgstr "Недійсна область очищення кешу."
 
-#: includes/class-simple-redis-cache-admin.php:373
+#: includes/class-simple-redis-cache-admin.php:375
 msgid "Clearing object cache requires explicit confirmation."
 msgstr "Для очищення об'єктного кешу потрібне явне підтвердження."
 
-#: includes/class-simple-redis-cache-admin.php:383
+#: includes/class-simple-redis-cache-admin.php:385
 msgid "All Redis caches were cleared."
 msgstr "Усі кеші Redis очищено."
 
-#: includes/class-simple-redis-cache-admin.php:384
+#: includes/class-simple-redis-cache-admin.php:386
 msgid "Object cache was cleared."
 msgstr "Об'єктний кеш очищено."
 
-#: includes/class-simple-redis-cache-admin.php:385
+#: includes/class-simple-redis-cache-admin.php:387
 msgid "HTML page cache was cleared."
 msgstr "Кеш HTML-сторінок очищено."
 
-#: includes/class-simple-redis-cache-admin.php:433
+#: includes/class-simple-redis-cache-admin.php:435
 msgid "The cache-warming URL could not be verified."
 msgstr "Не вдалося перевірити URL для прогріву кешу."
 
-#: includes/class-simple-redis-cache-admin.php:447
 #: includes/class-simple-redis-cache-admin.php:449
+#: includes/class-simple-redis-cache-admin.php:451
 msgid "Caching"
 msgstr "Кешування"
 
-#: includes/class-simple-redis-cache-admin.php:453
+#: includes/class-simple-redis-cache-admin.php:455
 msgid "Clear all"
 msgstr "Очистити все"
 
-#: includes/class-simple-redis-cache-admin.php:454
+#: includes/class-simple-redis-cache-admin.php:456
 msgid "Clear HTML page cache"
 msgstr "Очистити кеш HTML-сторінок"
 
-#: includes/class-simple-redis-cache-admin.php:455
-#: includes/class-simple-redis-cache-admin.php:586
+#: includes/class-simple-redis-cache-admin.php:457
+#: includes/class-simple-redis-cache-admin.php:588
 msgid "Clear object cache"
 msgstr "Очистити об'єктний кеш"
 
-#: includes/class-simple-redis-cache-admin.php:456
-#: includes/class-simple-redis-cache-admin.php:816
+#: includes/class-simple-redis-cache-admin.php:458
+#: includes/class-simple-redis-cache-admin.php:818
 msgid "Warm cache"
 msgstr "Прогріти кеш"
 
-#: includes/class-simple-redis-cache-admin.php:457
-#: includes/class-simple-redis-cache-admin.php:462
+#: includes/class-simple-redis-cache-admin.php:459
+#: includes/class-simple-redis-cache-admin.php:464
 msgid "Settings"
 msgstr "Налаштування"
 
-#: includes/class-simple-redis-cache-admin.php:500
+#: includes/class-simple-redis-cache-admin.php:502
 msgid ""
 "Simple Redis Cache requires the PhpRedis extension; caching will fail open "
 "until it is installed."
@@ -591,18 +621,18 @@ msgstr ""
 "Simple Redis Cache потребує розширення PhpRedis; доки його не встановлено, "
 "помилки кешування не блокуватимуть звичайні HTTP-запити."
 
-#: includes/class-simple-redis-cache-admin.php:507
+#: includes/class-simple-redis-cache-admin.php:509
 msgctxt "cache type in an admin notice"
 msgid "Object cache"
 msgstr "Об'єктний кеш"
 
-#: includes/class-simple-redis-cache-admin.php:508
+#: includes/class-simple-redis-cache-admin.php:510
 msgctxt "cache type in an admin notice"
 msgid "HTML page cache"
 msgstr "Кеш HTML-сторінок"
 
 #. translators: %s: localized cache type.
-#: includes/class-simple-redis-cache-admin.php:513
+#: includes/class-simple-redis-cache-admin.php:515
 #, php-format
 msgid "%s cannot start because another plugin owns its WordPress drop-in."
 msgstr ""
@@ -610,14 +640,14 @@ msgstr ""
 "іншому плагіну."
 
 #. translators: %s: localized cache type.
-#: includes/class-simple-redis-cache-admin.php:522
+#: includes/class-simple-redis-cache-admin.php:524
 #, php-format
 msgid "%s is enabled in settings, but its WordPress drop-in is not installed."
 msgstr ""
 "%s увімкнено в налаштуваннях, але відповідний drop-in WordPress не "
 "встановлено."
 
-#: includes/class-simple-redis-cache-admin.php:532
+#: includes/class-simple-redis-cache-admin.php:534
 msgid ""
 "HTML page cache is enabled, but WP_CACHE is not true in the current request. "
 "Check wp-config.php; a newly added definition takes effect on the next "
@@ -627,60 +657,60 @@ msgstr ""
 "запиті. Перевірте wp-config.php; щойно додане визначення набуде чинності в "
 "наступному запиті."
 
-#: includes/class-simple-redis-cache-admin.php:549
+#: includes/class-simple-redis-cache-admin.php:551
 msgid "Installed by Simple Redis Cache"
 msgstr "Встановлено плагіном Simple Redis Cache"
 
-#: includes/class-simple-redis-cache-admin.php:550
+#: includes/class-simple-redis-cache-admin.php:552
 msgid "Foreign drop-in (not modified)"
 msgstr "Сторонній drop-in (не змінено)"
 
-#: includes/class-simple-redis-cache-admin.php:551
+#: includes/class-simple-redis-cache-admin.php:553
 msgid "Not installed"
 msgstr "Не встановлено"
 
-#: includes/class-simple-redis-cache-admin.php:554
+#: includes/class-simple-redis-cache-admin.php:556
 msgid "Status and diagnostics"
 msgstr "Стан і діагностика"
 
-#: includes/class-simple-redis-cache-admin.php:556
+#: includes/class-simple-redis-cache-admin.php:558
 msgid "PhpRedis"
 msgstr "PhpRedis"
 
-#: includes/class-simple-redis-cache-admin.php:556
+#: includes/class-simple-redis-cache-admin.php:558
 msgid "Available"
 msgstr "Доступне"
 
-#: includes/class-simple-redis-cache-admin.php:556
+#: includes/class-simple-redis-cache-admin.php:558
 msgid "Missing"
 msgstr "Відсутнє"
 
-#: includes/class-simple-redis-cache-admin.php:557
+#: includes/class-simple-redis-cache-admin.php:559
 msgid "Connected"
 msgstr "Підключено"
 
-#: includes/class-simple-redis-cache-admin.php:557
-#: includes/class-simple-redis-cache-admin.php:566
+#: includes/class-simple-redis-cache-admin.php:559
+#: includes/class-simple-redis-cache-admin.php:568
 msgid "Unavailable"
 msgstr "Недоступно"
 
-#: includes/class-simple-redis-cache-admin.php:558
+#: includes/class-simple-redis-cache-admin.php:560
 msgid "Redis server"
 msgstr "Сервер Redis"
 
-#: includes/class-simple-redis-cache-admin.php:560
+#: includes/class-simple-redis-cache-admin.php:562
 msgid "Version unavailable"
 msgstr "Версія недоступна"
 
-#: includes/class-simple-redis-cache-admin.php:561
+#: includes/class-simple-redis-cache-admin.php:563
 msgid "maxmemory policy"
 msgstr "політика maxmemory"
 
-#: includes/class-simple-redis-cache-admin.php:561
+#: includes/class-simple-redis-cache-admin.php:563
 msgid "unavailable"
 msgstr "недоступна"
 
-#: includes/class-simple-redis-cache-admin.php:563
+#: includes/class-simple-redis-cache-admin.php:565
 msgid ""
 "This policy can evict persistent generation metadata and should be changed "
 "to noeviction or volatile-* when possible."
@@ -688,62 +718,62 @@ msgstr ""
 "Ця політика може витісняти постійні метадані поколінь. За можливості змініть "
 "її на noeviction або volatile-*."
 
-#: includes/class-simple-redis-cache-admin.php:569
+#: includes/class-simple-redis-cache-admin.php:571
 msgid "Connection target"
 msgstr "Ціль Redis"
 
 #. translators: %d: Redis database number.
-#: includes/class-simple-redis-cache-admin.php:569
+#: includes/class-simple-redis-cache-admin.php:571
 #, php-format
 msgid "database %d"
 msgstr "база даних %d"
 
 #. translators: %d: Redis database number.
-#: includes/class-simple-redis-cache-admin.php:570
+#: includes/class-simple-redis-cache-admin.php:572
 msgid "Object drop-in"
 msgstr "Drop-in об'єктного кешу"
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:570
-#: includes/class-simple-redis-cache-admin.php:571
+#: includes/class-simple-redis-cache-admin.php:572
 #: includes/class-simple-redis-cache-admin.php:573
+#: includes/class-simple-redis-cache-admin.php:575
 #, php-format
 msgid "mode %s"
 msgstr "права %s"
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:570
-#: includes/class-simple-redis-cache-admin.php:571
+#: includes/class-simple-redis-cache-admin.php:572
+#: includes/class-simple-redis-cache-admin.php:573
 msgid "The drop-in is writable by its group or by other system users."
 msgstr ""
 "Drop-in доступний для запису своїй групі або іншим системним користувачам."
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:571
+#: includes/class-simple-redis-cache-admin.php:573
 msgid "Page drop-in"
 msgstr "Drop-in кешу сторінок"
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:572
+#: includes/class-simple-redis-cache-admin.php:574
 msgid "WP_CACHE"
 msgstr "WP_CACHE"
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:572
+#: includes/class-simple-redis-cache-admin.php:574
 msgid "true"
 msgstr "true"
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:572
+#: includes/class-simple-redis-cache-admin.php:574
 msgid "not true"
 msgstr "не дорівнює true"
 
-#: includes/class-simple-redis-cache-admin.php:573
+#: includes/class-simple-redis-cache-admin.php:575
 msgid "Generated early config"
 msgstr "Згенерована рання конфігурація"
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:573
+#: includes/class-simple-redis-cache-admin.php:575
 msgid ""
 "The generated configuration permissions are broader than the recommended "
 "0640 or stricter."
@@ -751,12 +781,12 @@ msgstr ""
 "Права згенерованої конфігурації ширші за рекомендовані 0640 або суворіші."
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:574
+#: includes/class-simple-redis-cache-admin.php:576
 msgid "Redis key prefix"
 msgstr "Префікс ключів Redis"
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:574
+#: includes/class-simple-redis-cache-admin.php:576
 msgid ""
 "Define WP_CACHE_KEY_SALT with a non-empty value in wp-config.php to control "
 "the leading prefix for every plugin key."
@@ -764,7 +794,7 @@ msgstr ""
 "Визначте WP_CACHE_KEY_SALT з непорожнім значенням у wp-config.php, щоб "
 "керувати початковим префіксом кожного ключа плагіна."
 
-#: includes/class-simple-redis-cache-admin.php:577
+#: includes/class-simple-redis-cache-admin.php:579
 msgid ""
 "Clear object cache and Clear all cache also delete every standard WordPress "
 "transient from this site database, including transients created by other "
@@ -774,27 +804,27 @@ msgstr ""
 "цього сайту всі стандартні транзієнти WordPress, включно зі створеними "
 "іншими плагінами. Дія «Очистити кеш сторінок» цього не робить."
 
-#: includes/class-simple-redis-cache-admin.php:582
+#: includes/class-simple-redis-cache-admin.php:584
 msgid "Test saved connection"
 msgstr "Перевірити збережене підключення"
 
-#: includes/class-simple-redis-cache-admin.php:584
+#: includes/class-simple-redis-cache-admin.php:586
 msgid "Clear all cache"
 msgstr "Очистити весь кеш"
 
-#: includes/class-simple-redis-cache-admin.php:585
+#: includes/class-simple-redis-cache-admin.php:587
 msgid "Clear page cache"
 msgstr "Очистити кеш сторінок"
 
-#: includes/class-simple-redis-cache-admin.php:594
+#: includes/class-simple-redis-cache-admin.php:596
 msgid "Confirm clearing all cache"
 msgstr "Підтвердьте очищення всього кешу"
 
-#: includes/class-simple-redis-cache-admin.php:594
+#: includes/class-simple-redis-cache-admin.php:596
 msgid "Confirm clearing object cache"
 msgstr "Підтвердьте очищення об'єктного кешу"
 
-#: includes/class-simple-redis-cache-admin.php:599
+#: includes/class-simple-redis-cache-admin.php:601
 msgid ""
 "This will invalidate both Redis cache layers and delete every standard "
 "WordPress transient from this site database, including transients created by "
@@ -804,7 +834,7 @@ msgstr ""
 "транзієнти WordPress із бази даних цього сайту, включно зі створеними іншими "
 "плагінами."
 
-#: includes/class-simple-redis-cache-admin.php:600
+#: includes/class-simple-redis-cache-admin.php:602
 msgid ""
 "This will invalidate the Redis object cache and delete every standard "
 "WordPress transient from this site database, including transients created by "
@@ -813,7 +843,7 @@ msgstr ""
 "Буде інвалідовано об'єктний кеш Redis і видалено всі стандартні транзієнти "
 "WordPress із бази даних цього сайту, включно зі створеними іншими плагінами."
 
-#: includes/class-simple-redis-cache-admin.php:604
+#: includes/class-simple-redis-cache-admin.php:606
 msgid ""
 "This action cannot restore the deleted database transients. Redis payloads "
 "are invalidated by generation and expire later according to their TTL."
@@ -821,63 +851,64 @@ msgstr ""
 "Видалені транзієнти бази даних неможливо відновити цією дією. Дані Redis "
 "інвалідуються через покоління ключів і згодом зникають відповідно до TTL."
 
-#: includes/class-simple-redis-cache-admin.php:610
+#: includes/class-simple-redis-cache-admin.php:612
 msgid "Yes, clear all cache"
 msgstr "Так, очистити весь кеш"
 
-#: includes/class-simple-redis-cache-admin.php:610
+#: includes/class-simple-redis-cache-admin.php:612
 msgid "Yes, clear object cache"
 msgstr "Так, очистити об'єктний кеш"
 
-#: includes/class-simple-redis-cache-admin.php:611
+#: includes/class-simple-redis-cache-admin.php:613
 msgid "Cancel"
 msgstr "Скасувати"
 
-#: includes/class-simple-redis-cache-admin.php:648
-#: includes/class-simple-redis-cache-plugin.php:439
+#: includes/class-simple-redis-cache-admin.php:650
+#: includes/class-simple-redis-cache-page-invalidator.php:144
+#: includes/class-simple-redis-cache-plugin.php:442
 #: includes/class-simple-redis-cache-purger.php:37
 #: includes/class-simple-redis-cache-purger.php:67
 msgid "Redis is unavailable."
 msgstr "Redis недоступний."
 
-#: includes/class-simple-redis-cache-admin.php:659
+#: includes/class-simple-redis-cache-admin.php:661
 msgid "Redis refused the temporary diagnostic write."
 msgstr "Redis відхилив тимчасовий діагностичний запис."
 
-#: includes/class-simple-redis-cache-admin.php:664
+#: includes/class-simple-redis-cache-admin.php:666
 msgid "Redis returned a different value for the temporary diagnostic key."
 msgstr "Redis повернув інше значення тимчасового діагностичного ключа."
 
-#: includes/class-simple-redis-cache-admin.php:669
+#: includes/class-simple-redis-cache-admin.php:671
 msgid "Redis did not delete the temporary diagnostic key."
 msgstr "Redis не видалив тимчасовий діагностичний ключ."
 
-#: includes/class-simple-redis-cache-admin.php:692
+#: includes/class-simple-redis-cache-admin.php:694
 msgid "missing or unreadable"
 msgstr "відсутня або недоступна для читання"
 
-#: includes/class-simple-redis-cache-admin.php:703
+#: includes/class-simple-redis-cache-admin.php:705
 msgid "readable, but not owned by Simple Redis Cache"
 msgstr "доступна для читання, але не належить Simple Redis Cache"
 
-#: includes/class-simple-redis-cache-admin.php:714
+#: includes/class-simple-redis-cache-admin.php:716
 msgid "owned, but invalid"
 msgstr "належить плагіну, але має недійсний вміст"
 
-#: includes/class-simple-redis-cache-admin.php:719
+#: includes/class-simple-redis-cache-admin.php:721
 msgid "readable and synchronized with saved settings"
 msgstr "доступна для читання й синхронізована зі збереженими налаштуваннями"
 
-#: includes/class-simple-redis-cache-admin.php:720
+#: includes/class-simple-redis-cache-admin.php:722
 msgid "readable, but different from saved settings"
 msgstr "доступна для читання, але відрізняється від збережених налаштувань"
 
-#: includes/class-simple-redis-cache-admin.php:748
-#: includes/class-simple-redis-cache-admin.php:960
+#: includes/class-simple-redis-cache-admin.php:750
+#: includes/class-simple-redis-cache-admin.php:962
 msgid "Cache warming"
 msgstr "Прогрів кешу"
 
-#: includes/class-simple-redis-cache-admin.php:749
+#: includes/class-simple-redis-cache-admin.php:751
 msgid ""
 "Select public WordPress content to request anonymously and store in the "
 "Redis HTML page cache. Valid existing cache HITs are verified and left "
@@ -887,50 +918,50 @@ msgstr ""
 "Redis-кеші HTML-сторінок. Наявні коректні записи кешу зі статусом HIT "
 "перевіряються й залишаються без змін."
 
-#: includes/class-simple-redis-cache-admin.php:752
+#: includes/class-simple-redis-cache-admin.php:754
 #: includes/class-simple-redis-cache-warmer.php:57
 msgid "Enable HTML page cache before warming it."
 msgstr "Увімкніть кеш HTML-сторінок перед прогрівом."
 
-#: includes/class-simple-redis-cache-admin.php:757
+#: includes/class-simple-redis-cache-admin.php:759
 msgid "Select all"
 msgstr "Вибрати все"
 
-#: includes/class-simple-redis-cache-admin.php:758
+#: includes/class-simple-redis-cache-admin.php:760
 msgid "Select none"
 msgstr "Зняти вибір"
 
-#: includes/class-simple-redis-cache-admin.php:763
+#: includes/class-simple-redis-cache-admin.php:765
 msgid "System pages"
 msgstr "Системні сторінки"
 
-#: includes/class-simple-redis-cache-admin.php:776
+#: includes/class-simple-redis-cache-admin.php:778
 msgid "Includes estimated pagination for the posts, author and date archives."
 msgstr ""
 "Включає розраховану пагінацію для сторінки записів і архівів авторів та дат."
 
-#: includes/class-simple-redis-cache-admin.php:780
+#: includes/class-simple-redis-cache-admin.php:782
 msgid "Public post types"
 msgstr "Публічні типи записів"
 
-#: includes/class-simple-redis-cache-admin.php:790
-#: includes/class-simple-redis-cache-admin.php:805
+#: includes/class-simple-redis-cache-admin.php:792
+#: includes/class-simple-redis-cache-admin.php:807
 msgid "Standard"
 msgstr "Стандартний"
 
-#: includes/class-simple-redis-cache-admin.php:790
-#: includes/class-simple-redis-cache-admin.php:805
+#: includes/class-simple-redis-cache-admin.php:792
+#: includes/class-simple-redis-cache-admin.php:807
 msgid "Custom"
 msgstr "Користувацький"
 
-#: includes/class-simple-redis-cache-admin.php:793
+#: includes/class-simple-redis-cache-admin.php:795
 msgid ""
 "WordPress attachment pages are disabled, so media URLs will not be warmed."
 msgstr ""
 "Сторінки вкладень WordPress вимкнені, тому URL медіафайлів не "
 "прогріватимуться."
 
-#: includes/class-simple-redis-cache-admin.php:796
+#: includes/class-simple-redis-cache-admin.php:798
 msgid ""
 "Each selection includes public, non-password-protected singular items and "
 "its public archive with estimated pagination when available."
@@ -938,11 +969,11 @@ msgstr ""
 "Кожен вибір охоплює окремі публічні матеріали без захисту паролем і, якщо "
 "доступно, їхній публічний архів із розрахованою пагінацією."
 
-#: includes/class-simple-redis-cache-admin.php:800
+#: includes/class-simple-redis-cache-admin.php:802
 msgid "Public taxonomies"
 msgstr "Публічні таксономії"
 
-#: includes/class-simple-redis-cache-admin.php:808
+#: includes/class-simple-redis-cache-admin.php:810
 msgid ""
 "Each selection includes non-empty public term archives and their estimated "
 "pagination."
@@ -950,7 +981,7 @@ msgstr ""
 "Кожен вибір охоплює непорожні публічні архіви термінів і їхню розраховану "
 "пагінацію."
 
-#: includes/class-simple-redis-cache-admin.php:812
+#: includes/class-simple-redis-cache-admin.php:814
 msgid ""
 "Sites using plain/query-string permalinks must enable query-string page "
 "caching before those URLs can be warmed."
@@ -959,7 +990,7 @@ msgstr ""
 "мають увімкнути кешування сторінок із рядками запиту, перш ніж ці URL можна "
 "буде прогріти."
 
-#: includes/class-simple-redis-cache-admin.php:813
+#: includes/class-simple-redis-cache-admin.php:815
 msgid ""
 "When enabled, search results and 404 pages can be cached as they are "
 "requested, but they do not have a finite discoverable URL list and are not "
@@ -969,7 +1000,7 @@ msgstr ""
 "під час запиту, але не мають скінченного списку URL для виявлення, тому не "
 "включаються до прогріву."
 
-#: includes/class-simple-redis-cache-admin.php:814
+#: includes/class-simple-redis-cache-admin.php:816
 msgid ""
 "Warming generates the anonymous no-cookie variant. Language variants "
 "selected by vary cookies are not warmed. Keep this tab open until the "
@@ -979,35 +1010,35 @@ msgstr ""
 "визначаються cookie зі списку варіацій, не прогріваються. Залиште цю вкладку "
 "відкритою до завершення процесу."
 
-#: includes/class-simple-redis-cache-admin.php:817
+#: includes/class-simple-redis-cache-admin.php:819
 msgid "Stop"
 msgstr "Зупинити"
 
-#: includes/class-simple-redis-cache-admin.php:853
+#: includes/class-simple-redis-cache-admin.php:855
 msgid "You are not allowed to manage Redis cache settings."
 msgstr "Вам не дозволено керувати налаштуваннями кешу Redis."
 
-#: includes/class-simple-redis-cache-admin.php:861
+#: includes/class-simple-redis-cache-admin.php:863
 msgid "Cache warming accepts POST requests only."
 msgstr "Прогрів кешу приймає лише POST-запити."
 
-#: includes/class-simple-redis-cache-admin.php:864
+#: includes/class-simple-redis-cache-admin.php:866
 msgid "You are not allowed to warm this cache."
 msgstr "Вам не дозволено прогрівати цей кеш."
 
-#: includes/class-simple-redis-cache-admin.php:867
+#: includes/class-simple-redis-cache-admin.php:869
 msgid "The cache-warming security token is invalid or expired."
 msgstr "Токен безпеки для прогріву кешу недійсний або протермінований."
 
-#: includes/class-simple-redis-cache-admin.php:961
+#: includes/class-simple-redis-cache-admin.php:963
 msgid "Status"
 msgstr "Стан"
 
-#: includes/class-simple-redis-cache-admin.php:978
+#: includes/class-simple-redis-cache-admin.php:980
 msgid "Cache settings sections"
 msgstr "Розділи налаштувань кешу"
 
-#: includes/class-simple-redis-cache-config.php:184
+#: includes/class-simple-redis-cache-config.php:189
 msgid ""
 "The early cache configuration file is owned by another component and was not "
 "overwritten."
@@ -1015,11 +1046,11 @@ msgstr ""
 "Файл ранньої конфігурації кешу належить іншому компоненту, тому його не "
 "перезаписано."
 
-#: includes/class-simple-redis-cache-config.php:189
+#: includes/class-simple-redis-cache-config.php:194
 msgid "Could not write the early Redis cache configuration."
 msgstr "Не вдалося записати ранню конфігурацію кешу Redis."
 
-#: includes/class-simple-redis-cache-config.php:198
+#: includes/class-simple-redis-cache-config.php:203
 msgid ""
 "The early cache configuration changed during installation and was not "
 "overwritten."
@@ -1027,11 +1058,11 @@ msgstr ""
 "Рання конфігурація кешу змінилася під час встановлення, тому її не "
 "перезаписано."
 
-#: includes/class-simple-redis-cache-config.php:204
+#: includes/class-simple-redis-cache-config.php:209
 msgid "Could not install the early Redis cache configuration."
 msgstr "Не вдалося встановити ранню конфігурацію кешу Redis."
 
-#: includes/class-simple-redis-cache-config.php:221
+#: includes/class-simple-redis-cache-config.php:226
 msgid ""
 "The early cache configuration file is not owned by Simple Redis Cache and "
 "was not removed."
@@ -1039,7 +1070,7 @@ msgstr ""
 "Файл ранньої конфігурації кешу не належить Simple Redis Cache, тому його не "
 "видалено."
 
-#: includes/class-simple-redis-cache-config.php:225
+#: includes/class-simple-redis-cache-config.php:230
 msgid "Could not remove the generated early Redis cache configuration."
 msgstr "Не вдалося видалити згенеровану ранню конфігурацію кешу Redis."
 
@@ -1157,15 +1188,22 @@ msgstr ""
 
 #: includes/class-simple-redis-cache-github-updater.php:98
 msgid ""
-"Version 0.2.0 adds settings-aware cache invalidation, safer generation "
-"recovery and purge confirmation, expanded diagnostics, hardened manual "
-"warming, and focused regression tests."
+"Version 0.3.0 adds independent targeted HTML-cache invalidation for updated "
+"posts, their WPML or Polylang translations, and related public taxonomy "
+"archives."
 msgstr ""
-"Версія 0.2.0 додає інвалідацію кешу відповідно до змін налаштувань, "
-"безпечніше відновлення поколінь і підтвердження очищення, розширену "
-"діагностику, посилений ручний прогрів та цільові регресійні тести."
+"Версія 0.3.0 додає незалежну точкову інвалідацію HTML-кешу для оновлених "
+"записів, їхніх перекладів WPML або Polylang і пов'язаних публічних архівів "
+"таксономій."
 
-#: includes/class-simple-redis-cache-plugin.php:64
+#. translators: %s: Redis connection or command error.
+#: includes/class-simple-redis-cache-page-invalidator.php:143
+#, php-format
+msgid "Could not invalidate page cache related to the updated post: %s"
+msgstr ""
+"Не вдалося інвалідувати кеш сторінок, пов'язаний з оновленим записом: %s"
+
+#: includes/class-simple-redis-cache-plugin.php:65
 msgid ""
 "Simple Redis Cache supports single-site WordPress installations only and was "
 "not activated."
@@ -1173,11 +1211,11 @@ msgstr ""
 "Simple Redis Cache підтримує лише односайтові інсталяції WordPress, тому "
 "його не активовано."
 
-#: includes/class-simple-redis-cache-plugin.php:65
+#: includes/class-simple-redis-cache-plugin.php:66
 msgid "Plugin activation refused"
 msgstr "В активації плагіна відмовлено"
 
-#: includes/class-simple-redis-cache-plugin.php:179
+#: includes/class-simple-redis-cache-plugin.php:180
 msgid ""
 "The Redis object namespace was invalidated, but existing database transients "
 "were retained. Use the confirmed Clear object cache action if those database "
@@ -1187,7 +1225,7 @@ msgstr ""
 "базі даних збережено. Якщо ці значення бази даних також потрібно видалити, "
 "скористайтеся підтвердженою дією «Очистити об’єктний кеш»."
 
-#: includes/class-simple-redis-cache-plugin.php:190
+#: includes/class-simple-redis-cache-plugin.php:191
 msgid ""
 "Simple Redis Cache is disabled because this plugin supports single-site "
 "WordPress installations only."
@@ -1195,7 +1233,7 @@ msgstr ""
 "Simple Redis Cache вимкнено, оскільки цей плагін підтримує лише односайтові "
 "інсталяції WordPress."
 
-#: includes/class-simple-redis-cache-plugin.php:280
+#: includes/class-simple-redis-cache-plugin.php:281
 msgid ""
 "Simple Redis Cache could not save its configuration migration. The existing "
 "cache runtime was left unchanged."
@@ -1203,7 +1241,7 @@ msgstr ""
 "Simple Redis Cache не зміг зберегти міграцію конфігурації. Поточне робоче "
 "середовище кешу залишено без змін."
 
-#: includes/class-simple-redis-cache-plugin.php:428
+#: includes/class-simple-redis-cache-plugin.php:431
 msgid ""
 "Cache settings changed concurrently while the runtime was being "
 "synchronized. Both managed cache layers were disabled and will be retried "
@@ -1213,25 +1251,25 @@ msgstr ""
 "паралельно. Обидва керовані шари кешу вимкнено; на наступному запиті "
 "адміністратора буде повторено застосування актуальних збережених налаштувань."
 
-#: includes/class-simple-redis-cache-plugin.php:429
+#: includes/class-simple-redis-cache-plugin.php:432
 msgid ""
 "The new cache settings are pending because Redis invalidation failed. Both "
 "managed cache layers were disabled to prevent stale entries and will be "
 "retried on the next administrator request."
 msgstr ""
 "Нові налаштування кешу очікують застосування, оскільки інвалідація Redis не "
-"вдалася. Обидва керовані шари кешу вимкнено, щоб не використовувати застарілі "
-"записи; на наступному запиті адміністратора спробу буде повторено."
+"вдалася. Обидва керовані шари кешу вимкнено, щоб не використовувати "
+"застарілі записи; на наступному запиті адміністратора спробу буде повторено."
 
 #. translators: %s: Redis connection error.
-#: includes/class-simple-redis-cache-plugin.php:436
+#: includes/class-simple-redis-cache-plugin.php:439
 #: includes/class-simple-redis-cache-purger.php:36
 #, php-format
 msgid "Could not clear object cache: %s"
 msgstr "Не вдалося очистити об'єктний кеш: %s"
 
 #. translators: %s: Redis connection error.
-#: includes/class-simple-redis-cache-plugin.php:437
+#: includes/class-simple-redis-cache-plugin.php:440
 #: includes/class-simple-redis-cache-purger.php:66
 #, php-format
 msgid "Could not clear page cache: %s"
@@ -1284,6 +1322,14 @@ msgstr "Redis повернув недійсне покоління кешу."
 #: includes/class-simple-redis-cache-redis.php:163
 msgid "Redis could not increment the cache generation."
 msgstr "Redis не зміг збільшити покоління кешу."
+
+#: includes/class-simple-redis-cache-redis.php:164
+msgid "Redis returned an invalid page content version."
+msgstr "Redis повернув недійсну версію вмісту сторінки."
+
+#: includes/class-simple-redis-cache-redis.php:165
+msgid "Redis could not invalidate page content versions."
+msgstr "Redis не зміг інвалідувати версії вмісту сторінок."
 
 #: includes/class-simple-redis-cache-warmer.php:33
 msgid "Homepage and posts page"

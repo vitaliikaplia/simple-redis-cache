@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class Simple_Redis_Cache_Early_Config {
-	public const CONFIG_VERSION = 2;
+	public const CONFIG_VERSION = 3;
 
 	/** @var array<string, mixed>|null */
 	private static ?array $config = null;
@@ -46,6 +46,8 @@ final class Simple_Redis_Cache_Early_Config {
 			'page'           => array(
 				'enabled'                 => false,
 				'ttl'                     => 3600,
+				'invalidate_on_post_update' => false,
+				'invalidate_term_archives_on_post_update' => false,
 				'cache_logged_in'         => false,
 				'cache_home'              => true,
 				'cache_singular'          => true,
@@ -166,6 +168,11 @@ final class Simple_Redis_Cache_Early_Config {
 
 	public static function meta_key( string $name, ?array $config = null ): string {
 		return self::prefix( $config ) . 'meta:' . $name;
+	}
+
+	/** Shared hash containing post and taxonomy-term HTML content versions. */
+	public static function page_content_versions_key( ?array $config = null ): string {
+		return self::meta_key( 'page-content-versions', $config );
 	}
 
 	/**

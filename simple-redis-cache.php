@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Simple Redis Cache
  * Description: Redis-only object cache and full-page HTML cache for WordPress.
- * Version: 0.2.0
+ * Version: 0.3.0
  * Author: Vitalii Kaplia
  * Author URI: https://kaplia.pro/
  * Update URI: https://github.com/vitaliikaplia/simple-redis-cache
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SIMPLE_REDIS_CACHE_VERSION', '0.2.0' );
+define( 'SIMPLE_REDIS_CACHE_VERSION', '0.3.0' );
 define( 'SIMPLE_REDIS_CACHE_FILE', __FILE__ );
 define( 'SIMPLE_REDIS_CACHE_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SIMPLE_REDIS_CACHE_BASENAME', plugin_basename( __FILE__ ) );
@@ -27,6 +27,7 @@ require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-redis.p
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-config.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-dropins.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-purger.php';
+require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-page-invalidator.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-warmer.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-admin.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-github-updater.php';

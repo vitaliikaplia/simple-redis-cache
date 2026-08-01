@@ -9,7 +9,7 @@ declare(strict_types=1);
 
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 define( 'HOUR_IN_SECONDS', 3600 );
-define( 'SIMPLE_REDIS_CACHE_VERSION', '0.2.0' );
+define( 'SIMPLE_REDIS_CACHE_VERSION', '0.3.0' );
 define( 'SIMPLE_REDIS_CACHE_BASENAME', 'custom-installed/simple-redis-cache.php' );
 
 if ( ! class_exists( 'WP_Error' ) ) {
@@ -112,7 +112,7 @@ $assert(
 );
 
 $GLOBALS['src_test_update_metadata'] = array(
-	'version'      => '0.3.0',
+	'version'      => '0.4.0',
 	'package'      => 'https://github.com/vitaliikaplia/simple-redis-cache/archive/refs/heads/master.zip',
 	'url'          => 'https://github.com/vitaliikaplia/simple-redis-cache',
 	'branch'       => 'master',
@@ -120,15 +120,15 @@ $GLOBALS['src_test_update_metadata'] = array(
 );
 
 $newer_transient = (object) array(
-	'checked'   => array( SIMPLE_REDIS_CACHE_BASENAME => '0.2.0' ),
+	'checked'   => array( SIMPLE_REDIS_CACHE_BASENAME => '0.3.0' ),
 	'no_update' => array(
-		SIMPLE_REDIS_CACHE_BASENAME => (object) array( 'new_version' => '0.2.0' ),
+		SIMPLE_REDIS_CACHE_BASENAME => (object) array( 'new_version' => '0.3.0' ),
 	),
 );
 $newer_result    = $updater->filter_update_plugins_transient( $newer_transient );
 $assert( isset( $newer_result->response[ SIMPLE_REDIS_CACHE_BASENAME ] ), 'A newer master-branch version was not offered as an update.' );
 $assert(
-	'0.3.0' === $newer_result->response[ SIMPLE_REDIS_CACHE_BASENAME ]->new_version,
+	'0.4.0' === $newer_result->response[ SIMPLE_REDIS_CACHE_BASENAME ]->new_version,
 	'The offered update has the wrong remote version.'
 );
 $assert(
@@ -140,10 +140,10 @@ $assert(
 	'A stale no-update response survived after a newer version was found.'
 );
 
-$GLOBALS['src_test_update_metadata']['version'] = '0.2.0';
+$GLOBALS['src_test_update_metadata']['version'] = '0.3.0';
 $current_updater   = $reflection->newInstanceWithoutConstructor();
 $current_transient = (object) array(
-	'checked'  => array( SIMPLE_REDIS_CACHE_BASENAME => '0.2.0' ),
+	'checked'  => array( SIMPLE_REDIS_CACHE_BASENAME => '0.3.0' ),
 	'response' => array(
 		SIMPLE_REDIS_CACHE_BASENAME => (object) array( 'new_version' => '9.9.9' ),
 	),
@@ -151,7 +151,7 @@ $current_transient = (object) array(
 $current_result    = $current_updater->filter_update_plugins_transient( $current_transient );
 $assert( isset( $current_result->no_update[ SIMPLE_REDIS_CACHE_BASENAME ] ), 'The current version was not recorded as up to date.' );
 $assert(
-	'0.2.0' === $current_result->no_update[ SIMPLE_REDIS_CACHE_BASENAME ]->new_version,
+	'0.3.0' === $current_result->no_update[ SIMPLE_REDIS_CACHE_BASENAME ]->new_version,
 	'The no-update response has the wrong remote version.'
 );
 $assert(
@@ -188,7 +188,7 @@ try {
 	if ( ! mkdir( $github_source, 0700 ) ) {
 		throw new RuntimeException( 'Could not create the GitHub archive directory.' );
 	}
-	file_put_contents( $github_source . '/simple-redis-cache.php', "<?php\n/* Version: 0.2.0 */\n", LOCK_EX );
+	file_put_contents( $github_source . '/simple-redis-cache.php', "<?php\n/* Version: 0.3.0 */\n", LOCK_EX );
 
 	$normalized = $updater->normalize_github_source_directory(
 		trailingslashit( $github_source ),

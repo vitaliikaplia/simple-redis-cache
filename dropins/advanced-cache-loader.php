@@ -94,10 +94,17 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 			if ( is_string( $stored ) && '' !== $stored ) {
 				$payload = self::decode_payload( $stored, $page );
 				if ( null !== $payload ) {
-					if ( headers_sent() ) {
+					$content_version_matches = self::payload_content_version_matches( $payload, $redis, $page );
+					if ( null === $content_version_matches ) {
+						self::debug_header( $debug, 'BYPASS' );
 						return;
 					}
-					self::serve( $payload, $request->is_head(), $debug );
+					if ( $content_version_matches ) {
+						if ( headers_sent() ) {
+							return;
+						}
+						self::serve( $payload, $request->is_head(), $debug );
+					}
 				}
 
 				// An invalid or obsolete payload must never make the request fail.
@@ -326,8 +333,16 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 
 				if ( is_string( $stored ) && '' !== $stored ) {
 					$payload = self::decode_payload( $stored, $page );
+					$content_version_matches = null !== $payload
+						? self::payload_content_version_matches( $payload, $redis, $page )
+						: false;
+					if ( null === $content_version_matches ) {
+						self::debug_header( $debug, 'BYPASS' );
+						return $template;
+					}
 					if (
 						null !== $payload &&
+						$content_version_matches &&
 						$payload['type'] === $current['type'] &&
 						(int) $payload['status'] === $current['status']
 					) {
@@ -651,11 +666,18 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 
 		/**
 		 * @param array<string, mixed> $page_config
-		 * @return array{version: int, status: int, type: string, headers: array<int, array{name: string, value: string}>, body: string, stored_at: int}|null
+		 * @return array{version: int, status: int, type: string, headers: array<int, array{name: string, value: string}>, body: string, stored_at: int, resource_type: string, resource_id: int, resource_version: string}|null
 		 */
 		private static function decode_payload( string $stored, array $page_config ): ?array {
 			$payload = @unserialize( $stored, array( 'allowed_classes' => false ) );
-			if ( ! is_array( $payload ) || 1 !== ( $payload['version'] ?? null ) || ! is_string( $payload['body'] ?? null ) ) {
+			$version = is_array( $payload ) ? (int) ( $payload['version'] ?? 0 ) : 0;
+			if ( ! is_array( $payload ) || ! in_array( $version, array( 1, 2, 3 ), true ) || ! is_string( $payload['body'] ?? null ) ) {
+				return null;
+			}
+			if ( ! empty( $page_config['invalidate_on_post_update'] ) && $version < 2 ) {
+				return null;
+			}
+			if ( ! empty( $page_config['invalidate_term_archives_on_post_update'] ) && $version < 3 ) {
 				return null;
 			}
 
@@ -684,14 +706,66 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				$safe_headers[] = array( 'name' => $name, 'value' => $value );
 			}
 
+			$resource_type    = '';
+			$resource_id      = 0;
+			$resource_version = '';
+			if ( 2 === $version ) {
+				$resource_id      = (int) ( $payload['post_id'] ?? 0 );
+				$resource_type    = $resource_id > 0 ? 'post' : '';
+				$resource_version = (string) ( $payload['post_version'] ?? '' );
+			} elseif ( 3 === $version ) {
+				$resource_type    = (string) ( $payload['resource_type'] ?? '' );
+				$resource_id      = (int) ( $payload['resource_id'] ?? 0 );
+				$resource_version = (string) ( $payload['resource_version'] ?? '' );
+			}
+			if (
+				! in_array( $resource_type, array( '', 'post', 'term' ), true ) ||
+				$resource_id < 0 ||
+				( '' === $resource_type && ( 0 !== $resource_id || '' !== $resource_version ) ) ||
+				( '' !== $resource_type && ( $resource_id < 1 || 1 !== preg_match( '/^[a-f0-9]{32}$/D', $resource_version ) ) )
+			) {
+				return null;
+			}
+
 			return array(
-				'version'   => 1,
+				'version'   => $version,
 				'status'    => $status,
 				'type'      => $type,
 				'headers'   => $safe_headers,
 				'body'      => $payload['body'],
 				'stored_at' => max( 0, (int) ( $payload['stored_at'] ?? 0 ) ),
+				'resource_type' => $resource_type,
+				'resource_id' => $resource_id,
+				'resource_version' => $resource_version,
 			);
+		}
+
+		/**
+		 * Check the late-bound post or term token before serving its payload. A
+		 * Redis error returns null so the request falls through to WordPress.
+		 *
+		 * @param array<string, mixed> $payload
+		 * @param array<string, mixed> $page_config
+		 */
+		private static function payload_content_version_matches( array $payload, Simple_Redis_Cache_Redis $redis, array $page_config ): ?bool {
+			$resource_type = (string) ( $payload['resource_type'] ?? '' );
+			$enabled       = ( 'post' === $resource_type && ! empty( $page_config['invalidate_on_post_update'] ) ) ||
+				( 'term' === $resource_type && ! empty( $page_config['invalidate_term_archives_on_post_update'] ) );
+			if ( ! $enabled ) {
+				return true;
+			}
+
+			$resource_id = max( 0, (int) ( $payload['resource_id'] ?? 0 ) );
+			if ( $resource_id < 1 ) {
+				return true;
+			}
+
+			$current = $redis->page_content_version( $resource_type, $resource_id );
+			if ( ! is_string( $current ) ) {
+				return null;
+			}
+
+			return hash_equals( (string) ( $payload['resource_version'] ?? '' ), $current );
 		}
 
 		/** @param array<string, mixed> $page_config */

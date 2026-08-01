@@ -161,6 +161,8 @@ final class Simple_Redis_Cache_Redis {
 			'Unable to select the Redis database.' => __( 'Unable to select the Redis database.', 'simple-redis-cache' ),
 			'Redis returned an invalid cache generation.' => __( 'Redis returned an invalid cache generation.', 'simple-redis-cache' ),
 			'Redis could not increment the cache generation.' => __( 'Redis could not increment the cache generation.', 'simple-redis-cache' ),
+			'Redis returned an invalid page content version.' => __( 'Redis returned an invalid page content version.', 'simple-redis-cache' ),
+			'Redis could not invalidate page content versions.' => __( 'Redis could not invalidate page content versions.', 'simple-redis-cache' ),
 			default => $this->error,
 		};
 	}
@@ -213,7 +215,14 @@ final class Simple_Redis_Cache_Redis {
 			return false;
 		}
 
-		$key = Simple_Redis_Cache_Early_Config::meta_key( $namespace . '-generation', $this->all_config );
+		$key  = Simple_Redis_Cache_Early_Config::meta_key( $namespace . '-generation', $this->all_config );
+		$keys = array( $key );
+		$script = "if redis.call('exists', KEYS[1]) == 0 then redis.call('set', KEYS[1], ARGV[1]) end local generation = redis.call('incr', KEYS[1])";
+		if ( 'page' === $namespace ) {
+			$keys[]  = $this->page_content_versions_key();
+			$script .= " redis.call('del', KEYS[2])";
+		}
+		$script .= ' return generation';
 
 		try {
 			/*
@@ -223,9 +232,9 @@ final class Simple_Redis_Cache_Redis {
 			 * group metadata key instead starts from a fresh random safe integer.
 			 */
 			$generation = $client->eval(
-				"if redis.call('exists', KEYS[1]) == 0 then redis.call('set', KEYS[1], ARGV[1]) end return redis.call('incr', KEYS[1])",
-				array( $key, (string) self::new_generation() ),
-				1
+				$script,
+				array_merge( $keys, array( (string) self::new_generation() ) ),
+				count( $keys )
 			);
 			$generation = self::parse_generation( $generation );
 			if ( null === $generation ) {
@@ -237,6 +246,100 @@ final class Simple_Redis_Cache_Redis {
 			$this->error = $throwable->getMessage();
 			return false;
 		}
+	}
+
+	/**
+	 * Return the current content version for a cached WordPress post or taxonomy
+	 * term archive. A missing hash field is initialized atomically with a random
+	 * token, so eviction can never make an older payload current again.
+	 */
+	public function page_content_version( string $resource_type, int $resource_id ): string|false {
+		$client = $this->client();
+		$field  = self::page_content_field( $resource_type, $resource_id );
+		if ( null === $client || null === $field ) {
+			return false;
+		}
+
+		try {
+			$version = $client->eval(
+				"local version = redis.call('hget', KEYS[1], ARGV[1]) if not version then version = ARGV[2] redis.call('hset', KEYS[1], ARGV[1], version) end return version",
+				array( $this->page_content_versions_key(), $field, self::new_page_content_version() ),
+				1
+			);
+
+			if ( ! is_string( $version ) || 1 !== preg_match( '/^[a-f0-9]{32}$/D', $version ) ) {
+				throw new RuntimeException( 'Redis returned an invalid page content version.' );
+			}
+
+			return $version;
+		} catch ( Throwable $throwable ) {
+			$this->error = $throwable->getMessage();
+			return false;
+		}
+	}
+
+	/**
+	 * Atomically invalidate cached HTML associated with post IDs and/or term
+	 * taxonomy IDs. Payloads retain the previous token and become stale on read.
+	 *
+	 * @param array{post?:int[],term?:int[]} $resources
+	 */
+	public function bump_page_content_versions( array $resources ): int|false {
+		$client = $this->client();
+		if ( null === $client ) {
+			return false;
+		}
+
+		$fields = array();
+		foreach ( array( 'post', 'term' ) as $resource_type ) {
+			foreach ( (array) ( $resources[ $resource_type ] ?? array() ) as $resource_id ) {
+				$field = self::page_content_field( $resource_type, (int) $resource_id );
+				if ( null !== $field ) {
+					$fields[ $field ] = true;
+				}
+			}
+		}
+		$fields = array_keys( $fields );
+		if ( empty( $fields ) ) {
+			return 0;
+		}
+
+		try {
+			$arguments = array( $this->page_content_versions_key() );
+			foreach ( $fields as $field ) {
+				$arguments[] = $field;
+				$arguments[] = self::new_page_content_version();
+			}
+
+			$count = $client->eval(
+				"for index = 1, #ARGV, 2 do redis.call('hset', KEYS[1], ARGV[index], ARGV[index + 1]) end return #ARGV / 2",
+				$arguments,
+				1
+			);
+
+			if ( ! is_int( $count ) && ! ( is_string( $count ) && preg_match( '/^[0-9]+$/D', $count ) ) ) {
+				throw new RuntimeException( 'Redis could not invalidate page content versions.' );
+			}
+
+			return (int) $count;
+		} catch ( Throwable $throwable ) {
+			$this->error = $throwable->getMessage();
+			return false;
+		}
+	}
+
+	private function page_content_versions_key(): string {
+		return Simple_Redis_Cache_Early_Config::page_content_versions_key( $this->all_config );
+	}
+
+	private static function new_page_content_version(): string {
+		return bin2hex( random_bytes( 16 ) );
+	}
+
+	private static function page_content_field( string $resource_type, int $resource_id ): ?string {
+		return $resource_id > 0 && in_array( $resource_type, array( 'post', 'term' ), true )
+			? $resource_type . ':' . $resource_id
+			: null;
 	}
 
 	/**

@@ -3,7 +3,7 @@ Contributors: vitaliikaplia
 Tags: redis, object cache, page cache, performance
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.2.0
+Stable tag: 0.3.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -16,7 +16,7 @@ Simple Redis Cache provides two independent cache layers backed by one standalon
 * A persistent WordPress object cache via `wp-content/object-cache.php`.
 * An early full-page HTML cache via `wp-content/advanced-cache.php`.
 
-There is no file-based cache, CDN, minification, scheduled/background preload, or automatic content purge. Redis TTL and explicit manual actions control cache lifetime.
+There is no file-based cache, CDN, minification, or scheduled/background preload. Independent targeted invalidation settings can expire the updated post, page, or public custom post type, its WPML/Polylang translations, and the public taxonomy term archives related to those posts without clearing unrelated page-cache entries.
 
 Connection settings are configured in the WordPress admin. A non-empty `WP_CACHE_KEY_SALT`, when defined in `wp-config.php`, is preserved byte-for-byte as the base prefix for every Redis key created by this plugin. A missing or empty value uses the generated per-site fallback prefix.
 
@@ -31,8 +31,9 @@ Updates are discovered from the `Version` header in `simple-redis-cache.php` on 
 3. Open Settings > Redis Cache.
 4. Enter the Redis connection settings on the Redis Connection tab.
 5. Enable Object Cache and/or HTML Page Cache on their respective tabs.
-6. Optionally use Cache Warming to select public content and keep the tab open until its live progress completes.
-7. Use the Status tab to test the saved connection and inspect diagnostics.
+6. Optionally enable singular-page invalidation and/or related taxonomy-archive invalidation on the HTML Page Cache tab.
+7. Optionally use Cache Warming to select public content and keep the tab open until its live progress completes.
+8. Use the Status tab to test the saved connection and inspect diagnostics.
 
 For a Unix socket, select Unix socket and enter the raw absolute filesystem path, such as `/home/account/.system/redis.sock`, in the Unix socket path field. Do not add `unix://`; Host and Port are ignored for this connection type.
 
@@ -70,13 +71,19 @@ because another WordPress cache may use it.
 * WordPress auth cookies and the bundled WordPress, WooCommerce, EDD, and PHP session-cookie patterns bypass page cache by default. Custom personalization cookies must be excluded or safely varied explicitly.
 * Cookie exclusions are name-based in the early drop-in. A stale or duplicate auth/session cookie can continue to bypass HTML cache after logout until the browser removes it.
 * Cache warming is manual and anonymous. The open tab performs same-origin browser requests with a 30-second per-request timeout and uses a protected server-side loopback fallback for a different origin, timeout, or network failure; no cron runs and existing entries are not cleared first. Only the anonymous no-cookie variant is warmed.
-* Automatic purge on post, comment, term, menu, or WooCommerce changes is intentionally not implemented.
+* Targeted post-update invalidation is disabled by default. When enabled, the core `post_updated` hook invalidates every cached HTML variant of that frontend-viewable post/page/CPT and all translations discovered through the documented WPML or Polylang APIs. Stale payloads are removed on their next read or expire by TTL.
+* Related taxonomy-archive invalidation is a separate disabled-by-default option. It invalidates all cached variants and pagination of assigned terms in frontend-viewable standard and custom taxonomies. Both old and new relationships are covered when terms change, hierarchical ancestors are included, and current terms of translated WPML/Polylang posts are collected.
+* Unrelated term archives, generic post-type/author/date archives, search, 404, menu, comment, arbitrary post-meta-only, and WooCommerce-derived pages are intentionally not invalidated. A static front page or posts page is still invalidated when singular-page invalidation is enabled and that page itself is the updated post. Use manual Clear Page Cache when broader related views must also be refreshed.
+* A Redis failure during post-update invalidation does not fail the WordPress save. The request remains fail-open, an administrator warning is queued, and the previous HTML may remain until TTL or manual page purge.
 * Object-cache `expire=0` means the configured Maximum TTL, not infinite storage.
 * Redis is a trusted serialization boundary and must be private and protected from untrusted writes. Missing generation metadata is recreated from a random safe integer rather than `1`, but `noeviction` or a volatile policy is still preferred for a stable hit rate.
 * Redis credentials are stored in the WordPress database and generated early config. File mode `0640` is best-effort; protect database and filesystem access at the hosting layer.
 * GitHub update metadata is cached for 12 hours. A failed check is cached for 1 hour, after which a later WordPress update check may retry.
 
 == Changelog ==
+
+= 0.3.0 =
+* Added independent targeted HTML-cache invalidation for updated posts/pages/public CPTs, their WPML/Polylang translations, and assigned public taxonomy archives with old/new relationship and hierarchical-parent coverage, without scanning Redis or clearing unrelated pages.
 
 = 0.2.0 =
 * Added versioned settings migration and targeted object/page namespace invalidation when cache semantics or Redis storage identity changes.

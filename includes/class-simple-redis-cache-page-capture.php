@@ -15,6 +15,10 @@ final class Simple_Redis_Cache_Page_Capture {
 	private bool $debug_header;
 	private bool $finalized = false;
 	private bool $released = false;
+	private bool $content_version_prepared = false;
+	private string $content_resource_type = '';
+	private int $content_resource_id = 0;
+	private string $content_version = '';
 
 	/** @param array<string, mixed> $context */
 	private function __construct( array $context ) {
@@ -42,6 +46,14 @@ final class Simple_Redis_Cache_Page_Capture {
 
 		if ( $capture->debug_header && function_exists( 'add_action' ) ) {
 			add_action( 'send_headers', array( $capture, 'send_debug_header' ), PHP_INT_MAX );
+		}
+
+		if ( $capture->uses_content_versions() ) {
+			if ( ! empty( $context['deferred_logged_in'] ) ) {
+				$capture->prepare_content_version();
+			} elseif ( function_exists( 'add_action' ) ) {
+				add_action( 'wp', array( $capture, 'prepare_content_version' ), PHP_INT_MAX );
+			}
 		}
 
 		if ( ! ob_start( array( $capture, 'handle_output' ) ) ) {
@@ -88,6 +100,36 @@ final class Simple_Redis_Cache_Page_Capture {
 
 		$this->released = true;
 		Simple_Redis_Cache_Advanced_Cache_Loader::release_lock( $this->context );
+	}
+
+	/**
+	 * Snapshot the queried post or taxonomy term's content version after the main
+	 * query is known and before its template renders. The final write rechecks it.
+	 *
+	 * @param mixed $wp Unused value supplied by the WordPress `wp` action.
+	 */
+	public function prepare_content_version( mixed $wp = null ): void {
+		unset( $wp );
+		if ( $this->content_version_prepared ) {
+			return;
+		}
+		$this->content_version_prepared = true;
+		$resource = $this->queried_content_resource();
+		if ( null === $resource ) {
+			return;
+		}
+		$this->content_resource_type = $resource['type'];
+		$this->content_resource_id   = $resource['id'];
+
+		$redis = $this->context['redis'] ?? null;
+		if ( ! $redis instanceof Simple_Redis_Cache_Redis ) {
+			return;
+		}
+
+		$version = $redis->page_content_version( $this->content_resource_type, $this->content_resource_id );
+		if ( is_string( $version ) ) {
+			$this->content_version = $version;
+		}
 	}
 
 	private function maybe_store( string $body ): void {
@@ -143,6 +185,29 @@ final class Simple_Redis_Cache_Page_Capture {
 			return;
 		}
 
+		$resource_type    = '';
+		$resource_id      = 0;
+		$resource_version = '';
+		if ( $this->uses_content_versions() ) {
+			if ( ! $this->content_version_prepared ) {
+				return;
+			}
+
+			$resource = $this->queried_content_resource();
+			if (
+				( null === $resource && '' !== $this->content_resource_type ) ||
+				( null !== $resource && ( $resource['type'] !== $this->content_resource_type || $resource['id'] !== $this->content_resource_id ) ) ||
+				( null !== $resource && '' === $this->content_version )
+			) {
+				return;
+			}
+			if ( null !== $resource ) {
+				$resource_type    = $resource['type'];
+				$resource_id      = $resource['id'];
+				$resource_version = $this->content_version;
+			}
+		}
+
 		if ( ! self::is_complete_html( $body ) ) {
 			return;
 		}
@@ -164,12 +229,15 @@ final class Simple_Redis_Cache_Page_Capture {
 
 		$payload = serialize(
 			array(
-				'version'   => 1,
+				'version'   => 3,
 				'status'    => $status,
 				'type'      => $type,
 				'headers'   => $headers,
 				'body'      => $body,
 				'stored_at' => time(),
+				'resource_type' => $resource_type,
+				'resource_id' => $resource_id,
+				'resource_version' => $resource_version,
 			)
 		);
 
@@ -192,16 +260,72 @@ if redis.call('get', KEYS[1]) == ARGV[1] then
 end
 return 0
 LUA;
+		$arguments = array( $lock_key, $cache_key, $lock_token, $payload, (string) $ttl );
+		$key_count = 2;
 
-		$result = $client->eval(
-			$script,
-			array( $lock_key, $cache_key, $lock_token, $payload, (string) $ttl ),
-			2
-		);
+		if ( $resource_id > 0 ) {
+			$config       = (array) ( $this->context['config'] ?? array() );
+			$versions_key = Simple_Redis_Cache_Early_Config::page_content_versions_key( $config );
+			$script       = <<<'LUA'
+if redis.call('get', KEYS[1]) ~= ARGV[1] then
+	return 0
+end
+if redis.call('hget', KEYS[3], ARGV[4]) ~= ARGV[5] then
+	redis.call('del', KEYS[1])
+	return -1
+end
+redis.call('set', KEYS[2], ARGV[2], 'EX', ARGV[3])
+redis.call('del', KEYS[1])
+return 1
+LUA;
+			$arguments = array( $lock_key, $cache_key, $versions_key, $lock_token, $payload, (string) $ttl, $resource_type . ':' . $resource_id, $resource_version );
+			$key_count = 3;
+		}
 
-		if ( 1 === (int) $result ) {
+		$result = $client->eval( $script, $arguments, $key_count );
+
+		if ( in_array( (int) $result, array( -1, 1 ), true ) ) {
 			$this->released = true;
 		}
+	}
+
+	private function uses_content_versions(): bool {
+		return ! empty( $this->page_config['invalidate_on_post_update'] ) || ! empty( $this->page_config['invalidate_term_archives_on_post_update'] );
+	}
+
+	/** @return array{type:string,id:int}|null */
+	private function queried_content_resource(): ?array {
+		if ( ! function_exists( 'get_queried_object' ) ) {
+			return null;
+		}
+
+		$object = get_queried_object();
+		if ( ! empty( $this->page_config['invalidate_on_post_update'] ) && class_exists( 'WP_Post', false ) && $object instanceof WP_Post ) {
+			$post_id   = (int) $object->ID;
+			$post_type = $post_id > 0 && function_exists( 'get_post_type' ) ? get_post_type( $post_id ) : false;
+			if ( is_string( $post_type ) && '' !== $post_type && function_exists( 'get_post_type_object' ) && function_exists( 'is_post_type_viewable' ) ) {
+				$post_type_object = get_post_type_object( $post_type );
+				if ( is_object( $post_type_object ) && is_post_type_viewable( $post_type_object ) ) {
+					return array( 'type' => 'post', 'id' => $post_id );
+				}
+			}
+		}
+
+		if (
+			! empty( $this->page_config['invalidate_term_archives_on_post_update'] ) &&
+			class_exists( 'WP_Term', false ) &&
+			$object instanceof WP_Term &&
+			function_exists( 'get_taxonomy' ) &&
+			function_exists( 'is_taxonomy_viewable' )
+		) {
+			$term_taxonomy_id = (int) $object->term_taxonomy_id;
+			$taxonomy_object  = get_taxonomy( (string) $object->taxonomy );
+			if ( $term_taxonomy_id > 0 && is_object( $taxonomy_object ) && is_taxonomy_viewable( $taxonomy_object ) ) {
+				return array( 'type' => 'term', 'id' => $term_taxonomy_id );
+			}
+		}
+
+		return null;
 	}
 
 	private function page_type(): ?string {

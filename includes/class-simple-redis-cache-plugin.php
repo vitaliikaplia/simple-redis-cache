@@ -44,6 +44,7 @@ final class Simple_Redis_Cache_Plugin {
 
 		new Simple_Redis_Cache_GitHub_Updater();
 		Simple_Redis_Cache_Admin::init();
+		Simple_Redis_Cache_Page_Invalidator::init();
 		add_action( 'update_option_' . Simple_Redis_Cache_Config::OPTION, array( self::class, 'settings_updated' ), 10, 3 );
 	}
 
@@ -308,6 +309,8 @@ final class Simple_Redis_Cache_Plugin {
 		$page_keys   = array(
 			'enabled',
 			'ttl',
+			'invalidate_on_post_update',
+			'invalidate_term_archives_on_post_update',
 			'cache_logged_in',
 			'cache_home',
 			'cache_singular',

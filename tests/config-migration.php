@@ -61,15 +61,17 @@ $assert = static function ( bool $condition, string $message ): void {
 $assert( Simple_Redis_Cache_Config::needs_migration(), 'Version 1 should require migration.' );
 $migrated = Simple_Redis_Cache_Config::migrate();
 $assert( is_array( $migrated ), 'Migration did not return a current configuration.' );
-$assert( 2 === $migrated['config_version'], 'Migration did not advance config_version.' );
+$assert( 3 === $migrated['config_version'], 'Migration did not advance config_version.' );
 $assert( 'cache.internal' === $migrated['redis']['host'], 'Migration lost the Redis host.' );
 $assert( 'preserve-me' === $migrated['redis']['password'], 'Migration lost the Redis password.' );
 $assert( true === $migrated['object']['enabled'] && 7200 === $migrated['object']['max_ttl'], 'Migration changed object settings.' );
 $assert( true === $migrated['page']['enabled'] && 900 === $migrated['page']['ttl'], 'Migration changed page settings.' );
 $assert( false === $migrated['page']['cache_home'], 'Migration replaced an explicit false value with a default.' );
+$assert( false === $migrated['page']['invalidate_on_post_update'], 'Migration did not initialize post-update invalidation safely.' );
+$assert( false === $migrated['page']['invalidate_term_archives_on_post_update'], 'Migration did not initialize taxonomy-archive invalidation safely.' );
 $assert( ! array_key_exists( 'obsolete', $migrated ), 'Migration retained an unknown root field.' );
 
-$GLOBALS['src_test_option']['config_version'] = 3;
+$GLOBALS['src_test_option']['config_version'] = 4;
 $assert( ! Simple_Redis_Cache_Config::needs_migration(), 'A newer stored schema must not be downgraded.' );
 $assert( null === Simple_Redis_Cache_Config::migrate(), 'A newer stored schema returned migration output.' );
 

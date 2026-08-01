@@ -141,6 +141,8 @@ final class Simple_Redis_Cache_Config {
 		$config['page'] = array(
 			'enabled'                  => ! empty( $page_input['enabled'] ),
 			'ttl'                      => min( MONTH_IN_SECONDS, max( 60, absint( $page_input['ttl'] ?? HOUR_IN_SECONDS ) ) ),
+			'invalidate_on_post_update' => ! empty( $page_input['invalidate_on_post_update'] ),
+			'invalidate_term_archives_on_post_update' => ! empty( $page_input['invalidate_term_archives_on_post_update'] ),
 			'cache_logged_in'          => ! empty( $page_input['cache_logged_in'] ),
 			'cache_home'               => ! empty( $page_input['cache_home'] ),
 			'cache_singular'           => ! empty( $page_input['cache_singular'] ),
