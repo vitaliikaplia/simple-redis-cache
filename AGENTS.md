@@ -9,6 +9,8 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 1. persistent WordPress Object Cache API через `wp-content/object-cache.php`;
 2. full-page HTML cache через `wp-content/advanced-cache.php`.
 
+Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.3.0`; schema конфігурації — `3`; page payload — `3`.
+
 Незмінні межі поточного продукту, якщо задача прямо не вимагає змінити scope:
 
 - тільки single-site WordPress;
@@ -88,7 +90,7 @@ Drop-in шаблони мають залишатися маленькими. П�
 - deactivation → `Simple_Redis_Cache_Plugin::deactivate()`;
 - `plugins_loaded` → `Simple_Redis_Cache_Plugin::init()`.
 
-`Plugin::init()` реєструє завантаження text domain на `init` priority `0`, відмовляється запускати підсистеми на multisite, виконує одноразову schema migration/self-heal за потреби, створює GitHub updater, ініціалізує admin hooks і слухає `update_option_simple_redis_cache_settings`. Activation та фактично потрібна migration окремо викликають `load_textdomain()`, оскільки їхні notices можуть виникнути до звичайного `init` load.
+`Plugin::init()` реєструє завантаження text domain на `init` priority `0`, відмовляється запускати підсистеми на multisite, виконує одноразову schema migration/self-heal за потреби, створює GitHub updater, ініціалізує admin hooks і `Simple_Redis_Cache_Page_Invalidator`, а також слухає `update_option_simple_redis_cache_settings`. Activation та фактично потрібна migration окремо викликають `load_textdomain()`, оскільки їхні notices можуть виникнути до звичайного `init` load.
 
 ### 3.2. Generated early config
 
@@ -477,11 +479,11 @@ Object/all потребують окремої confirmation-сторінки т�
 
 ### 10.1. Опційна інвалідація після оновлення контенту
 
-Коли `page.invalidate_on_post_update=true`, `Simple_Redis_Cache_Page_Invalidator` слухає core `post_updated`, ігнорує revisions/autosaves та працює лише для frontend-viewable post types. Він збирає current post ID і translation IDs двічі: одразу після core update та ще раз на `shutdown`, після пізніх save callbacks. Це покриває old/new translation relationship у межах request. Polylang інтегрується через `pll_get_post_translations()` лише після `function_exists`; WPML — через documented `wpml_element_type`, `wpml_element_trid` та `wpml_get_element_translations` filters лише коли hooks зареєстровані.
+`Simple_Redis_Cache_Page_Invalidator` завжди реєструє core hooks `post_updated` і `set_object_terms`, але виходить без роботи, доки HTML-кеш та хоча б одна з двох invalidation options не ввімкнені. На `post_updated` він ігнорує revisions/autosaves та працює лише для frontend-viewable post types. Current post ID і translation IDs збираються одразу після core update та повторно на `shutdown`, після пізніх save callbacks, щоб охопити translation relationships до і після таких callbacks у межах request. Polylang інтегрується через `pll_get_post_translations()` лише після `function_exists`; WPML — через documented `wpml_element_type`, `wpml_element_trid` та `wpml_get_element_translations` filters лише коли hooks зареєстровані. Post content tokens фактично змінюються тільки коли `page.invalidate_on_post_update=true`.
 
 Коли `page.invalidate_term_archives_on_post_update=true`, той самий invalidator додатково слухає `set_object_terms` із повними old/new `term_taxonomy_id`. Він обробляє лише taxonomies, для яких `is_taxonomy_viewable()` повертає true, збирає current terms оновленого поста та його перекладів до й після пізніх save callbacks і додає ancestors через `get_ancestors()`. Так зміна категорії інвалідує old і new archives, а hierarchical parent archives очищуються тому, що можуть включати child content. Зв'язки translated posts дають tokens відповідних translated term archives без залежності від внутрішніх API мультимовних плагінів.
 
-На shutdown усі post і term-taxonomy resources одним Redis Lua call отримують нові random tokens. Це логічно інвалідує всі їхні HTML variants: pagination, query-string, language-cookie та optional logged-in/session/access variants. Exact Redis payload фізично видаляється під час наступного stale read або природно за TTL. Static front/posts page також інвалідується, коли queried object є саме оновленим `WP_Post`. Опції singular і taxonomy invalidation незалежні. Непов'язані term archives та generic home/post-type/author/date/search/404/menu/comment/WooCommerce-derived pages не очищуються. Пряма зміна post meta без `post_updated` не очищає singular payload; пряма зміна term relationship через WordPress API все одно потрапляє в `set_object_terms`.
+На shutdown усі post і term-taxonomy resources одним Redis Lua call отримують нові random tokens. Це логічно інвалідує всі їхні HTML variants: pagination, query-string, language-cookie та optional logged-in/session/access variants. Exact Redis payload фізично видаляється під час наступного stale read або природно за TTL. Static front/posts page також інвалідується, коли queried object є саме оновленим `WP_Post`. Опції singular і taxonomy invalidation незалежні. Непов'язані term archives та generic home/post-type/author/date/search/404/menu/comment/WooCommerce-derived pages не очищуються. Пряма зміна post meta без `post_updated` не очищає singular payload; пряма зміна term relationship через WordPress API все одно потрапляє в `set_object_terms`, а за одночасно ввімкненої singular invalidation також змінює token самого post.
 
 Якщо Redis invalidation не вдалася, save WordPress лишається успішним у fail-open режимі, а адміністратору ставиться warning notice. На відміну від settings-policy transition, runtime/drop-in не вимикаються: старий HTML може жити до TTL або ручного page purge.
 
@@ -638,7 +640,7 @@ WordPress update не запускає activation hook. Тому normal `plugins
 ## 14. Single-site defense in depth
 
 - Activation відмовляється на multisite.
-- `Plugin::init()` на multisite показує notices, але не запускає admin/updater/sync.
+- `Plugin::init()` на multisite показує notices, але не запускає admin, updater, page invalidator або settings synchronization.
 - Object loader повертається до core runtime cache.
 - Advanced-cache loader і capture роблять bypass.
 - Purger повертає `WP_Error`.
@@ -673,7 +675,7 @@ Updater працює лише поки plugin active. Він не самовіл
 Release checklist:
 
 1. однаково підняти header `Version` і `SIMPLE_REDIS_CACHE_VERSION`;
-2. оновити `Stable tag` і changelog;
+2. оновити `Stable tag`, changelog у `readme.txt` і hard-coded changelog поточної версії у стандартному WordPress plugin-details modal;
 3. оновити POT/PO `Project-Id-Version`, скомпілювати MO та перевірити обидві локалі;
 4. за зміни requirements синхронізувати main header, readmes та hard-coded updater fields;
 5. перевірити ZIP root behavior;
@@ -684,7 +686,7 @@ Tag або GitHub Release поточному updater не потрібні: но
 
 ## 16. Відомі компроміси й ризики
 
-- Немає auto purge: HTML і objects можуть бути stale до TTL/manual purge.
+- Загального auto purge немає: автоматично змінюються лише content tokens оновлених singular resources і/або пов'язаних public term archives, коли відповідні opt-in options увімкнені. Object cache та всі інші HTML-представлення можуть бути stale до TTL або manual purge.
 - Late `DONOTCACHEPAGE`, визначений active plugin, зупиняє MISS storage, але не готовий anonymous early HIT. Для гарантованого bypass умова має бути доступна до `advanced-cache.php` або виражена path/query/cookie exclusion.
 - Anonymous HIT не завантажує WordPress, DB, plugins або theme hooks. Будь-яка personalization повинна бути врахована в exclusions/variants.
 - Anonymous output-buffer guard порівнює лише `ob_get_level()`, а не identity handlers; заміна stack зі збереженням тієї самої глибини не буде виявлена.
@@ -701,6 +703,7 @@ Tag або GitHub Release поточному updater не потрібні: но
 - Credentials існують і в DB, і в generated config.
 - Object payload декодується native `unserialize()` з objects; Redis має бути trusted/private і не приймати сторонніх writes.
 - Кожна нова persistent group створює group-generation meta key без TTL; dynamic/unbounded group names можуть накопичувати permanent metadata.
+- Hash `page-content-versions` не має TTL і накопичує по одному field для кожного відстеженого post/term resource; global page purge видаляє весь hash, а звичайна точкова інвалідація лише змінює відповідні fields.
 - Ownership marker не є криптографічною ідентичністю.
 - `WP_CACHE` лишається після uninstall.
 - GitHub package — mutable archive поточної гілки `master` без pin до commit, незалежної checksum або signature.
@@ -792,7 +795,10 @@ wp plugin status simple-redis-cache
 - redirects/private headers/Set-Cookie/Vary/content encoding;
 - 404/search flags;
 - concurrent MISS lock і TTL;
-- manual page generation purge.
+- manual page generation purge;
+- із warmed singular HIT оновлення post/page/CPT дає наступний `MISS`, потім `HIT`, і так само інвалідує знайдені WPML/Polylang translations;
+- зміна term relationships інвалідує old/new public term archives та hierarchical parents, але не unrelated archive;
+- Redis failure під час content invalidation не ламає save, ставить warning і залишає попередній HTML доступним до TTL/manual purge.
 
 Для updater:
 
@@ -815,4 +821,4 @@ wp plugin status simple-redis-cache
 - `simple-redis-cache-uk.mo` завантажується для admin locale `uk`, а `en_US` показує source English;
 - у PO немає fuzzy/untranslated entries, а format placeholders збігаються з POT.
 
-Після будь-якої зміни release metadata синхронізувати `simple-redis-cache.php`, `readme.txt`, `README.md`, `AGENTS.md` та updater requirements.
+Після будь-якої зміни release metadata синхронізувати `simple-redis-cache.php`, `readme.txt`, `README.md`, `AGENTS.md`, gettext metadata та hard-coded updater requirements/details text.

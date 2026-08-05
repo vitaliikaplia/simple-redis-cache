@@ -46,11 +46,13 @@ Sites using plain/query-string permalinks must enable query-string page caching 
 The plugin never overwrites a drop-in owned by another plugin.
 
 To publish an update, synchronize the `Version` plugin header,
-`SIMPLE_REDIS_CACHE_VERSION`, `Stable tag`, changelog, and bundled translation
-files, then commit and push that coherent tree to the repository's `master`
-branch. A GitHub tag or GitHub Release is not required. The branch package is
-mutable and has no independent checksum or cryptographic signature; transport
-relies on GitHub HTTPS and the integrity of the public repository.
+`SIMPLE_REDIS_CACHE_VERSION`, `Stable tag`, `readme.txt` changelog, the current
+version's changelog text in the standard WordPress plugin-details modal, and the
+bundled POT/PO/MO files, then commit and push that coherent tree to the
+repository's `master` branch. A GitHub tag or GitHub Release is not required.
+The branch package is mutable and has no independent checksum or cryptographic
+signature; transport relies on GitHub HTTPS and the integrity of the public
+repository.
 
 Deactivation removes the generated early configuration and both plugin-owned
 drop-ins while retaining admin settings for a later reactivation. Deleting the
@@ -73,7 +75,7 @@ because another WordPress cache may use it.
 * Cache warming is manual and anonymous. The open tab performs same-origin browser requests with a 30-second per-request timeout and uses a protected server-side loopback fallback for a different origin, timeout, or network failure; no cron runs and existing entries are not cleared first. Only the anonymous no-cookie variant is warmed.
 * Targeted post-update invalidation is disabled by default. When enabled, the core `post_updated` hook invalidates every cached HTML variant of that frontend-viewable post/page/CPT and all translations discovered through the documented WPML or Polylang APIs. Stale payloads are removed on their next read or expire by TTL.
 * Related taxonomy-archive invalidation is a separate disabled-by-default option. It invalidates all cached variants and pagination of assigned terms in frontend-viewable standard and custom taxonomies. Both old and new relationships are covered when terms change, hierarchical ancestors are included, and current terms of translated WPML/Polylang posts are collected.
-* Unrelated term archives, generic post-type/author/date archives, search, 404, menu, comment, arbitrary post-meta-only, and WooCommerce-derived pages are intentionally not invalidated. A static front page or posts page is still invalidated when singular-page invalidation is enabled and that page itself is the updated post. Use manual Clear Page Cache when broader related views must also be refreshed.
+* Unrelated term archives, generic post-type/author/date archives, search, 404, menu, comment, arbitrary post-meta-only, and WooCommerce-derived pages are intentionally not invalidated. A static front page or posts page is still invalidated when singular-page invalidation is enabled and that page itself is the updated post. A direct term-relationship change through the WordPress API also invalidates the post's singular cache when singular-page invalidation is enabled. Use manual Clear Page Cache when broader related views must also be refreshed.
 * A Redis failure during post-update invalidation does not fail the WordPress save. The request remains fail-open, an administrator warning is queued, and the previous HTML may remain until TTL or manual page purge.
 * Object-cache `expire=0` means the configured Maximum TTL, not infinite storage.
 * Redis is a trusted serialization boundary and must be private and protected from untrusted writes. Missing generation metadata is recreated from a random safe integer rather than `1`, but `noeviction` or a volatile policy is still preferred for a stable hit rate.
