@@ -3,7 +3,7 @@ Contributors: vitaliikaplia
 Tags: redis, object cache, page cache, performance
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.3.0
+Stable tag: 0.4.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -83,6 +83,9 @@ because another WordPress cache may use it.
 * GitHub update metadata is cached for 12 hours. A failed check is cached for 1 hour, after which a later WordPress update check may retry.
 
 == Changelog ==
+
+= 0.4.0 =
+* Added an optional CDN cache lifetime for page-cache hits, sent as `Cache-Control: public, max-age=0, s-maxage=N`, so a shared cache or reverse proxy can store the response while browsers keep revalidating. Disabled by default; an existing `Cache-Control` on the stored response is never overwritten.
 
 = 0.3.0 =
 * Added independent targeted HTML-cache invalidation for updated posts/pages/public CPTs, their WPML/Polylang translations, and assigned public taxonomy archives with old/new relationship and hierarchical-parent coverage, without scanning Redis or clearing unrelated pages.

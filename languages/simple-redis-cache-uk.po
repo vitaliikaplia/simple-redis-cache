@@ -1389,3 +1389,11 @@ msgstr "Згенерований URL не є дійсним URL цього са�
 #, php-format
 msgid "The frontend returned HTTP %d."
 msgstr "Фронтенд повернув HTTP %d."
+
+#: includes/class-simple-redis-cache-admin.php:164
+msgid "CDN cache lifetime"
+msgstr "Час життя в CDN"
+
+#: includes/class-simple-redis-cache-admin.php:164
+msgid "Seconds a CDN or reverse proxy may keep a cache hit, sent as Cache-Control: public, max-age=0, s-maxage=N. Browsers still revalidate every time. Zero disables the header, which is what shared caches see today. Enable this only if you are willing to purge the CDN when content changes, because the CDN does not know about page invalidation."
+msgstr "Скільки секунд CDN або зворотний проксі може тримати попадання кешу; надсилається як Cache-Control: public, max-age=0, s-maxage=N. Браузери щоразу перевіряють заново. Нуль вимикає заголовок — саме це shared-кеші бачать зараз. Вмикайте лише тоді, коли готові чистити CDN після зміни контенту, бо про інвалідацію сторінки він не дізнається."

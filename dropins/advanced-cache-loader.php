@@ -103,7 +103,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 						if ( headers_sent() ) {
 							return;
 						}
-						self::serve( $payload, $request->is_head(), $debug );
+						self::serve( $payload, $request->is_head(), $debug, (int) ( $page['shared_max_age'] ?? 0 ) );
 					}
 				}
 
@@ -346,7 +346,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 						$payload['type'] === $current['type'] &&
 						(int) $payload['status'] === $current['status']
 					) {
-						self::serve( $payload, ! empty( $context['head_request'] ), $debug );
+						self::serve( $payload, ! empty( $context['head_request'] ), $debug, (int) ( $page['shared_max_age'] ?? 0 ) );
 					}
 
 					try {
@@ -789,7 +789,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 		}
 
 		/** @param array<string, mixed> $payload */
-		private static function serve( array $payload, bool $head_request, bool $debug ): never {
+		private static function serve( array $payload, bool $head_request, bool $debug, int $shared_max_age = 0 ): never {
 			if ( ! headers_sent() ) {
 				http_response_code( (int) $payload['status'] );
 				$seen_headers = array();
@@ -798,6 +798,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 					header( $header['name'] . ': ' . $header['value'], ! isset( $seen_headers[ $lower_name ] ) );
 					$seen_headers[ $lower_name ] = true;
 				}
+				self::shared_cache_header( $shared_max_age, isset( $seen_headers['cache-control'] ) );
 				self::debug_header( $debug, 'HIT' );
 			}
 
@@ -805,6 +806,30 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				echo $payload['body']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Stored complete response body.
 			}
 			exit;
+		}
+
+		/**
+		 * Tell shared caches (CDN, reverse proxy) that this HIT may be stored.
+		 *
+		 * WordPress emits no useful Cache-Control for anonymous responses, and this drop-in only
+		 * replays the headers it captured — so a cached page arrives at the edge with nothing to
+		 * act on, and a CDN's only safe assumption is "do not store". The page then travels to
+		 * the origin on every single request, which defeats much of the point of having an edge.
+		 *
+		 * `s-maxage` targets shared caches only; `max-age=0` keeps browsers revalidating, so a
+		 * visitor never sits on a stale page while an editor is publishing. Off by default:
+		 * turning it on is a deployment decision, because the operator must also be willing to
+		 * purge the CDN when content changes.
+		 *
+		 * A Cache-Control already present in the stored response is never overwritten — if the
+		 * site deliberately marked something private, that intent wins.
+		 */
+		private static function shared_cache_header( int $shared_max_age, bool $already_present ): void {
+			if ( $shared_max_age < 1 || $already_present ) {
+				return;
+			}
+
+			header( 'Cache-Control: public, max-age=0, s-maxage=' . $shared_max_age );
 		}
 
 		private static function is_replayable_header( string $name, string $value ): bool {

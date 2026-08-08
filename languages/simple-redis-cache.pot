@@ -1108,3 +1108,11 @@ msgstr ""
 #, php-format
 msgid "The frontend returned HTTP %d."
 msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:164
+msgid "CDN cache lifetime"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:164
+msgid "Seconds a CDN or reverse proxy may keep a cache hit, sent as Cache-Control: public, max-age=0, s-maxage=N. Browsers still revalidate every time. Zero disables the header, which is what shared caches see today. Enable this only if you are willing to purge the CDN when content changes, because the CDN does not know about page invalidation."
+msgstr ""

@@ -21,7 +21,8 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 - усі Redis connection settings задаються в адмінці;
 - єдина користувацька константа для namespace кешу — `WP_CACHE_KEY_SALT`;
 - `WP_CACHE` використовується лише як стандартний прапорець WordPress для `advanced-cache.php`;
-- жодного filesystem cache, Predis, Redis Cluster, Sentinel, replica routing або CDN;
+- жодного filesystem cache, Predis, Redis Cluster, Sentinel або replica routing;
+- жодної інтеграції з CDN: немає API-клієнтів, purge-викликів чи знання про конкретного провайдера. Єдиний виняток — опційний `page.shared_max_age`, який лише додає стандартний `Cache-Control` на попадання; що з ним робить проксі, плагіну невідомо, і очищення CDN лишається на операторові;
 - жодної мініфікації, scheduled/background preload або cron warmup;
 - автоматична content invalidation обмежена двома незалежними opt-in механізмами: оновлений post/page/CPT із перекладами та публічні term archives, пов'язані з цими posts; непов'язані й generic archives автоматично не очищуються;
 - дозволений лише ручний browser-led прогрів HTML-кешу з відкритої admin-вкладки;
@@ -170,6 +171,7 @@ Password input ніколи не заповнюється назад у HTML. `k
 | --- | --- | --- |
 | `page.enabled` | `false` | Керує `advanced-cache.php`; потребує `WP_CACHE=true`. |
 | `page.ttl` | `3600` | `60..MONTH_IN_SECONDS`. |
+| `page.shared_max_age` | `0` | `0..MONTH_IN_SECONDS`. Нуль — не надсилати заголовок узагалі (поточна поведінка). Ненульове значення додає на HIT `Cache-Control: public, max-age=0, s-maxage=N`: shared cache може зберігати відповідь, браузер щоразу перевіряє. Заголовок формується в `serve()` і **не** входить у збережений payload, тож зміна цього значення не інвалідує кеш — на відміну від решти ключів у `invalidate_changed_settings()`. Наявний `Cache-Control` у збереженій відповіді ніколи не перезаписується. |
 | `page.invalidate_on_post_update` | `false` | На `post_updated` точково змінює content token поточного frontend-viewable post/page/CPT та всіх перекладів, знайдених через documented WPML/Polylang APIs. |
 | `page.invalidate_term_archives_on_post_update` | `false` | На `post_updated`/`set_object_terms` точково змінює content tokens assigned public term archives, old/new relationships і hierarchical ancestors для поста та його перекладів. |
 | `page.cache_logged_in` | `false` | Session/access-specific logged-in variants. |

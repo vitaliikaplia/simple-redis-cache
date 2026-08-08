@@ -46,6 +46,10 @@ final class Simple_Redis_Cache_Early_Config {
 			'page'           => array(
 				'enabled'                 => false,
 				'ttl'                     => 3600,
+				// Seconds a CDN or reverse proxy may keep a cache HIT (s-maxage). Zero, the
+				// default, sends no Cache-Control at all and keeps today's behaviour: shared
+				// caches will not store the page, so every visit reaches the origin.
+				'shared_max_age'          => 0,
 				'invalidate_on_post_update' => false,
 				'invalidate_term_archives_on_post_update' => false,
 				'cache_logged_in'         => false,
