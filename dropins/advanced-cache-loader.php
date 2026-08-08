@@ -30,6 +30,29 @@ unset( $simple_redis_cache_dependencies, $simple_redis_cache_dependency );
 
 if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 	final class Simple_Redis_Cache_Advanced_Cache_Loader {
+		/** @var array<string, true> Locks whose Page_Capture buffer still intends to write. */
+		private static array $pending_capture_locks = array();
+
+		/**
+		 * Mark a lock as owned by an open capture buffer.
+		 *
+		 * Output buffers are finalized after the shutdown stack when a theme or plugin
+		 * removes core's wp_ob_end_flush_all() callback. A shutdown release would then
+		 * drop the lock before the buffer is stored, the write script would see a
+		 * foreign token, and the page would silently never be cached. While a capture
+		 * is pending the short lock TTL is the safer owner.
+		 */
+		public static function hold_lock_for_capture( string $lock_key ): void {
+			if ( '' !== $lock_key ) {
+				self::$pending_capture_locks[ $lock_key ] = true;
+			}
+		}
+
+		/** Release the capture's claim once its buffer has been finalized. */
+		public static function finish_capture_lock( string $lock_key ): void {
+			unset( self::$pending_capture_locks[ $lock_key ] );
+		}
+
 		/** @param array<string, mixed> $config */
 		public static function run( array $config, string $plugin_dir ): void {
 			$page  = (array) ( $config['page'] ?? array() );
@@ -346,7 +369,12 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 						$payload['type'] === $current['type'] &&
 						(int) $payload['status'] === $current['status']
 					) {
-						self::serve( $payload, ! empty( $context['head_request'] ), $debug, (int) ( $page['shared_max_age'] ?? 0 ) );
+						/*
+						 * Never advertise a session-specific response to shared caches. This
+						 * payload is keyed by the user's session and capabilities, so a CDN
+						 * keyed by URL would hand one visitor another visitor's HTML.
+						 */
+						self::serve( $payload, ! empty( $context['head_request'] ), $debug, 0, true );
 					}
 
 					try {
@@ -635,22 +663,31 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 			return $directives === $legacy || $directives === $current;
 		}
 
-		/** @param array<string, mixed> $context */
-		public static function release_lock( array $context ): void {
+		/**
+		 * @param array<string, mixed> $context
+		 * @return bool False only when the release was declined because a capture
+		 *              buffer still owns the lock; the caller should try again later.
+		 */
+		public static function release_lock( array $context ): bool {
 			$redis = $context['redis'] ?? null;
 			if ( ! $redis instanceof Simple_Redis_Cache_Redis ) {
-				return;
+				return true;
 			}
 
 			$client = $redis->client();
 			if ( null === $client ) {
-				return;
+				return true;
 			}
 
 			$key   = (string) ( $context['lock_key'] ?? '' );
 			$token = (string) ( $context['lock_token'] ?? '' );
 			if ( '' === $key || '' === $token ) {
-				return;
+				return true;
+			}
+
+			// An open capture buffer still needs this token to store its payload.
+			if ( isset( self::$pending_capture_locks[ $key ] ) ) {
+				return false;
 			}
 
 			try {
@@ -662,6 +699,8 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 			} catch ( Throwable ) {
 				// The lock has a short TTL, so a Redis failure is safe to ignore.
 			}
+
+			return true;
 		}
 
 		/**
@@ -789,7 +828,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 		}
 
 		/** @param array<string, mixed> $payload */
-		private static function serve( array $payload, bool $head_request, bool $debug, int $shared_max_age = 0 ): never {
+		private static function serve( array $payload, bool $head_request, bool $debug, int $shared_max_age = 0, bool $private_response = false ): never {
 			if ( ! headers_sent() ) {
 				http_response_code( (int) $payload['status'] );
 				$seen_headers = array();
@@ -798,7 +837,21 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 					header( $header['name'] . ': ' . $header['value'], ! isset( $seen_headers[ $lower_name ] ) );
 					$seen_headers[ $lower_name ] = true;
 				}
-				self::shared_cache_header( $shared_max_age, isset( $seen_headers['cache-control'] ) );
+
+				if ( $private_response ) {
+					/*
+					 * A session-specific response whose stored headers carry no policy of
+					 * their own must still say so out loud. Sites that remove the standard
+					 * WordPress no-cache headers would otherwise put personalized HTML on
+					 * the wire with nothing telling an intermediary to keep it private.
+					 */
+					if ( ! isset( $seen_headers['cache-control'] ) ) {
+						header( 'Cache-Control: private, no-store' );
+					}
+				} else {
+					self::shared_cache_header( $shared_max_age, isset( $seen_headers['cache-control'] ) );
+				}
+
 				self::debug_header( $debug, 'HIT' );
 			}
 

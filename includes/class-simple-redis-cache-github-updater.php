@@ -29,13 +29,18 @@ final class Simple_Redis_Cache_GitHub_Updater {
 		add_action( 'upgrader_process_complete', array( $this, 'clear_cache_after_update' ), 10, 2 );
 	}
 
-	/** @param mixed $transient */
-	public function filter_update_plugins_transient( mixed $transient ): object {
-		if ( ! is_object( $transient ) ) {
-			$transient = new stdClass();
-		}
-
-		if ( empty( $transient->checked ) || ! is_array( $transient->checked ) ) {
+	/**
+	 * Never materialize an update transient that WordPress does not have.
+	 *
+	 * Returning a fresh stdClass for a missing transient turns core's `false` into a
+	 * truthy value. delete_plugins() checks the raw value, so it would then take its
+	 * "there is update data" branch and write back a transient with no last_checked.
+	 *
+	 * @param mixed $transient
+	 * @return mixed
+	 */
+	public function filter_update_plugins_transient( mixed $transient ): mixed {
+		if ( ! is_object( $transient ) || empty( $transient->checked ) || ! is_array( $transient->checked ) ) {
 			return $transient;
 		}
 
@@ -95,7 +100,7 @@ final class Simple_Redis_Cache_GitHub_Updater {
 			'download_link' => $remote_data['package'] ?? $this->get_package_url(),
 			'sections'      => array(
 				'description' => '<p>' . esc_html__( 'Redis-only persistent object caching and full-page HTML caching for a single-site WordPress installation.', 'simple-redis-cache' ) . '</p>',
-				'changelog'   => '<p>' . esc_html__( 'Version 0.3.0 adds independent targeted HTML-cache invalidation for updated posts, their WPML or Polylang translations, and related public taxonomy archives.', 'simple-redis-cache' ) . '</p>',
+				'changelog'   => '<p>' . esc_html__( 'Version 0.5.0 is a correctness release: logged-in hits are never offered to a shared cache, discarded output buffers and comment-moderation links are no longer stored, path exclusions match case-insensitively, database transient mirrors survive a failed Redis invalidation, and invalidation warnings now reach an administrator.', 'simple-redis-cache' ) . '</p>',
 			),
 		);
 	}

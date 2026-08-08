@@ -118,11 +118,40 @@
 		return payload.data;
 	}
 
+	// Discovery walks every selected post type and taxonomy, so it is much slower
+	// than a single page request — but it still must not hang the tab forever.
+	const prepareTimeout = Math.max( requestTimeout, Number( config.prepareTimeout ) || 120000 );
+
 	async function prepare( signal ) {
 		const data = new FormData( form );
 		data.append( 'action', config.prepareAction );
 		data.append( 'nonce', config.nonce );
-		return ajax( data, signal );
+
+		const prepareController = new AbortController();
+		let timedOut = false;
+		const abortPrepare = () => prepareController.abort();
+		const timeoutId = window.setTimeout( () => {
+			timedOut = true;
+			prepareController.abort();
+		}, prepareTimeout );
+
+		if ( signal.aborted ) {
+			abortPrepare();
+		} else {
+			signal.addEventListener( 'abort', abortPrepare, { once: true } );
+		}
+
+		try {
+			return await ajax( data, prepareController.signal );
+		} catch ( error ) {
+			if ( ! signal.aborted && timedOut ) {
+				throw new Error( strings.prepareTimedOut || strings.prepareFailed );
+			}
+			throw error;
+		} finally {
+			window.clearTimeout( timeoutId );
+			signal.removeEventListener( 'abort', abortPrepare );
+		}
 	}
 
 	async function requestStatus( url, method, signal ) {

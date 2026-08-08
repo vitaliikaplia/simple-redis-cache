@@ -44,9 +44,17 @@ final class Simple_Redis_Cache_Page_Invalidator {
 
 		$translation_ids = self::translation_ids( $post_id, $post_type );
 		foreach ( $translation_ids as $translation_id ) {
+			// An orphaned multilingual relationship can point at a deleted post or one
+			// whose type is no longer viewable. No payload can be bound to it, so
+			// queueing it would only add a permanent field to the content-version hash.
+			$translation_type = get_post_type( $translation_id );
+			if ( ! is_string( $translation_type ) || ! self::is_frontend_post_type( $translation_type ) ) {
+				continue;
+			}
+
 			self::$pending_post_ids[ $translation_id ] = true;
 			if ( ! empty( $config['page']['invalidate_term_archives_on_post_update'] ) ) {
-				self::collect_current_terms( $translation_id, (string) get_post_type( $translation_id ) );
+				self::collect_current_terms( $translation_id, $translation_type );
 			}
 		}
 
@@ -78,6 +86,16 @@ final class Simple_Redis_Cache_Page_Invalidator {
 
 		$post_type = get_post_type( $object_id );
 		if ( ! is_string( $post_type ) || ! self::is_frontend_post_type( $post_type ) || ! self::is_viewable_taxonomy( $taxonomy ) ) {
+			return;
+		}
+
+		/*
+		 * set_object_terms fires for any object type, and its object IDs are only
+		 * unique per taxonomy. A term attached to a user or comment whose ID happens
+		 * to match a post ID would otherwise invalidate that unrelated post and every
+		 * term it carries. Require the post type to actually belong to this taxonomy.
+		 */
+		if ( ! self::taxonomy_applies_to_post_type( $taxonomy, $post_type ) ) {
 			return;
 		}
 
@@ -171,6 +189,15 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	private static function is_viewable_taxonomy( string $taxonomy ): bool {
 		$taxonomy_object = '' !== $taxonomy ? get_taxonomy( $taxonomy ) : false;
 		return is_object( $taxonomy_object ) && is_taxonomy_viewable( $taxonomy_object );
+	}
+
+	private static function taxonomy_applies_to_post_type( string $taxonomy, string $post_type ): bool {
+		$taxonomy_object = '' !== $taxonomy ? get_taxonomy( $taxonomy ) : false;
+		if ( ! is_object( $taxonomy_object ) ) {
+			return false;
+		}
+
+		return in_array( $post_type, array_map( 'strval', (array) ( $taxonomy_object->object_type ?? array() ) ), true );
 	}
 
 	private static function collect_current_terms( int $post_id, string $post_type ): void {

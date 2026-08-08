@@ -56,20 +56,42 @@ final class Simple_Redis_Cache_Page_Capture {
 			}
 		}
 
-		if ( ! ob_start( array( $capture, 'handle_output' ) ) ) {
-			$capture->release_lock();
+		if ( ob_start( array( $capture, 'handle_output' ) ) ) {
+			// Claim the lock for as long as the buffer is open, so a shutdown callback
+			// that runs before the buffer is finalized cannot drop it.
+			Simple_Redis_Cache_Advanced_Cache_Loader::hold_lock_for_capture( (string) ( $context['lock_key'] ?? '' ) );
+			return;
 		}
+
+		$capture->release_lock();
 	}
 
 	/**
 	 * Output-buffer callback. The original body is always returned unchanged.
+	 *
+	 * A discarded buffer reports PHP_OUTPUT_HANDLER_FINAL just like a flushed one,
+	 * so FINAL alone cannot tell "the visitor received this" from "this was thrown
+	 * away". Anything that calls ob_end_clean() late — a maintenance-mode plugin
+	 * replacing the response, or the common `echo apply_filters( 'x', ob_get_clean() )`
+	 * pattern — would otherwise store a document nobody was served. Normal
+	 * termination reports phase 9 (FINAL|START); a discard reports 11 (adds CLEAN).
 	 */
 	public function handle_output( string $body, int $phase = 0 ): string {
 		if ( $this->finalized || 0 === ( $phase & PHP_OUTPUT_HANDLER_FINAL ) ) {
 			return $body;
 		}
 
+		if ( 0 !== ( $phase & PHP_OUTPUT_HANDLER_CLEAN ) ) {
+			// Discarded, so there is nothing to store and nothing left to protect.
+			Simple_Redis_Cache_Advanced_Cache_Loader::finish_capture_lock( (string) ( $this->context['lock_key'] ?? '' ) );
+			$this->release_lock();
+			return $body;
+		}
+
 		$this->finalized = true;
+		// The buffer is being finalized now, so the lock no longer has to outlive a
+		// premature shutdown release.
+		Simple_Redis_Cache_Advanced_Cache_Loader::finish_capture_lock( (string) ( $this->context['lock_key'] ?? '' ) );
 
 		try {
 			$this->maybe_store( $body );
@@ -98,8 +120,12 @@ final class Simple_Redis_Cache_Page_Capture {
 			return;
 		}
 
-		$this->released = true;
-		Simple_Redis_Cache_Advanced_Cache_Loader::release_lock( $this->context );
+		// Only record the release when it actually happened. A shutdown callback that
+		// runs before the buffer is finalized is declined, and must not stop the real
+		// release from being attempted again once the payload has been written.
+		if ( Simple_Redis_Cache_Advanced_Cache_Loader::release_lock( $this->context ) ) {
+			$this->released = true;
+		}
 	}
 
 	/**

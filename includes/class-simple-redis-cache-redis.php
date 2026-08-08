@@ -15,6 +15,8 @@ final class Simple_Redis_Cache_Redis {
 	private array $config;
 	private ?Redis $client = null;
 	private ?string $error = null;
+	/** Connection failure, which stays true for every later call on this instance. */
+	private ?string $connection_error = null;
 	private bool $attempted = false;
 
 	/** @param array<string, mixed>|null $config */
@@ -35,7 +37,8 @@ final class Simple_Redis_Cache_Redis {
 		$this->attempted = true;
 
 		if ( ! $this->is_available() ) {
-			$this->error = 'The PhpRedis extension is not installed.';
+			$this->error            = 'The PhpRedis extension is not installed.';
+			$this->connection_error = $this->error;
 			return false;
 		}
 
@@ -130,10 +133,21 @@ final class Simple_Redis_Cache_Redis {
 			$this->client = $redis;
 			return true;
 		} catch ( Throwable $throwable ) {
-			$this->error  = $throwable->getMessage();
-			$this->client = null;
+			$this->error            = $throwable->getMessage();
+			$this->connection_error = $this->error;
+			$this->client           = null;
 			return false;
 		}
+	}
+
+	/**
+	 * Clear the error left by a previous call so error() answers "did this call
+	 * fail?" rather than "has anything ever failed on this instance?". A failed
+	 * connection is deliberately preserved: connect() is attempted once, so a later
+	 * call must not look successful merely because it stopped re-reporting it.
+	 */
+	private function begin_operation(): void {
+		$this->error = $this->connection_error;
 	}
 
 	public function client(): ?Redis {
@@ -168,6 +182,8 @@ final class Simple_Redis_Cache_Redis {
 	}
 
 	public function ping(): bool {
+		$this->begin_operation();
+
 		try {
 			$client = $this->client();
 			if ( null === $client ) {
@@ -183,6 +199,7 @@ final class Simple_Redis_Cache_Redis {
 	}
 
 	public function generation( string $namespace ): int {
+		$this->begin_operation();
 		$client = $this->client();
 		if ( null === $client ) {
 			return 1;
@@ -210,6 +227,7 @@ final class Simple_Redis_Cache_Redis {
 	}
 
 	public function bump_generation( string $namespace ): int|false {
+		$this->begin_operation();
 		$client = $this->client();
 		if ( null === $client ) {
 			return false;
@@ -254,6 +272,7 @@ final class Simple_Redis_Cache_Redis {
 	 * token, so eviction can never make an older payload current again.
 	 */
 	public function page_content_version( string $resource_type, int $resource_id ): string|false {
+		$this->begin_operation();
 		$client = $this->client();
 		$field  = self::page_content_field( $resource_type, $resource_id );
 		if ( null === $client || null === $field ) {
@@ -285,6 +304,7 @@ final class Simple_Redis_Cache_Redis {
 	 * @param array{post?:int[],term?:int[]} $resources
 	 */
 	public function bump_page_content_versions( array $resources ): int|false {
+		$this->begin_operation();
 		$client = $this->client();
 		if ( null === $client ) {
 			return false;

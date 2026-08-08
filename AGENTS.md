@@ -9,7 +9,7 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 1. persistent WordPress Object Cache API через `wp-content/object-cache.php`;
 2. full-page HTML cache через `wp-content/advanced-cache.php`.
 
-Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.3.0`; schema конфігурації — `3`; page payload — `3`.
+Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.5.0`; schema конфігурації — `3`; page payload — `3`.
 
 Незмінні межі поточного продукту, якщо задача прямо не вимагає змінити scope:
 
@@ -26,7 +26,7 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 - жодної мініфікації, scheduled/background preload або cron warmup;
 - автоматична content invalidation обмежена двома незалежними opt-in механізмами: оновлений post/page/CPT із перекладами та публічні term archives, пов'язані з цими posts; непов'язані й generic archives автоматично не очищуються;
 - дозволений лише ручний browser-led прогрів HTML-кешу з відкритої admin-вкладки;
-- глобальне очищення тільки вручну; автоматична інвалідація завжди точкова через content tokens;
+- глобальне очищення користувачем доступне тільки вручну, але generation bump-иться автоматично на lifecycle-подіях: activation/deactivation, schema migration і зміна semantic policy-налаштувань відповідного шару; автоматична інвалідація після оновлення контенту завжди точкова через content tokens;
 - ніколи не застосовувати `FLUSHDB`, `FLUSHALL` або Redis `KEYS`;
 - будь-який Redis/cache failure має бути fail-open для звичайного HTTP-запиту.
 
@@ -40,19 +40,19 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 | `includes/class-simple-redis-cache-plugin.php` | Оркестрація lifecycle, single-site guard, синхронізація конфігурації та drop-in. |
 | `includes/class-simple-redis-cache-early-config.php` | Dependency-free defaults, читання раннього config, побудова Redis prefix/meta keys. |
 | `includes/class-simple-redis-cache-config.php` | Читання option напряму з БД, sanitization, атомарний generated config. |
-| `includes/class-simple-redis-cache-redis.php` | Мінімальний PhpRedis connection wrapper і generation counters. |
+| `includes/class-simple-redis-cache-redis.php` | Мінімальний PhpRedis connection wrapper, generation counters і hash post/term content versions. |
 | `includes/class-simple-redis-cache-dropins.php` | Встановлення, видалення, ownership-check drop-in та безпечне ввімкнення `WP_CACHE`. |
-| `includes/class-simple-redis-cache-admin.php` | Settings API, діагностика, connection test, notices, admin bar і privileged warmup AJAX. |
+| `includes/class-simple-redis-cache-admin.php` | Settings API, діагностика, connection test, confirmed purge actions, notices, admin bar і privileged warmup AJAX. |
 | `includes/class-simple-redis-cache-purger.php` | Ручна інвалідація object/page namespaces та очищення DB transients. |
 | `includes/class-simple-redis-cache-page-invalidator.php` | Відкладена точкова інвалідація оновлених post/page/CPT, груп перекладів і пов'язаних public term archives. |
 | `includes/class-simple-redis-cache-warmer.php` | Allowlisted discovery публічних frontend URL, URL signatures і server-side warm fallback. |
-| `includes/class-simple-redis-cache-page-capture.php` | Пізня валідація WordPress-відповіді, output capture і атомарний запис HTML. |
+| `includes/class-simple-redis-cache-page-capture.php` | Пізня валідація WordPress-відповіді, output capture, знімок post/term content version і атомарний запис HTML із звільненням lock. |
 | `includes/class-simple-redis-cache-github-updater.php` | Перевірка версії у GitHub-гілці `master` та інтеграція зі стандартним WordPress updater. |
 | `dropins/object-cache.php` | Мінімальний шаблон, що копіюється в `wp-content/object-cache.php`. |
 | `dropins/object-cache-loader.php` | Ранній bootstrap і процедурний WordPress Object Cache API. |
 | `dropins/class-simple-redis-cache-object-cache.php` | Реалізація глобального `WP_Object_Cache`. |
 | `dropins/advanced-cache.php` | Мінімальний шаблон, що копіюється в `wp-content/advanced-cache.php`. |
-| `dropins/advanced-cache-loader.php` | Ранній HIT/MISS runtime, logged-in validation і stampede lock. |
+| `dropins/advanced-cache-loader.php` | Ранній HIT/MISS runtime, logged-in validation, stampede lock і опційний `Cache-Control` для shared caches на HIT. |
 | `dropins/class-simple-redis-cache-page-request.php` | Dependency-free request validation та page-key canonicalization. |
 | `assets/js/admin-warm-cache.js` | Послідовний HEAD/GET/HEAD warmup, live progress, stop і verified result counters. |
 | `assets/css/admin-warm-cache.css` | Layout вкладки ручного прогріву без build-кроку. |
@@ -91,7 +91,7 @@ Drop-in шаблони мають залишатися маленькими. П�
 - deactivation → `Simple_Redis_Cache_Plugin::deactivate()`;
 - `plugins_loaded` → `Simple_Redis_Cache_Plugin::init()`.
 
-`Plugin::init()` реєструє завантаження text domain на `init` priority `0`, відмовляється запускати підсистеми на multisite, виконує одноразову schema migration/self-heal за потреби, створює GitHub updater, ініціалізує admin hooks і `Simple_Redis_Cache_Page_Invalidator`, а також слухає `update_option_simple_redis_cache_settings`. Activation та фактично потрібна migration окремо викликають `load_textdomain()`, оскільки їхні notices можуть виникнути до звичайного `init` load.
+`Plugin::init()` реєструє завантаження text domain на `init` priority `0`, відмовляється запускати підсистеми на multisite, виконує одноразову schema migration/self-heal за потреби, створює GitHub updater, ініціалізує admin hooks і `Simple_Redis_Cache_Page_Invalidator`, а також слухає `update_option_simple_redis_cache_settings`. Activation та фактично потрібна migration окремо викликають `load_textdomain()`, оскільки їхні notices можуть виникнути до звичайного `init` load; той самий виклик робить `maybe_recover_runtime()` перед retry, хоча на `admin_init` text domain уже завантажено.
 
 ### 3.2. Generated early config
 
@@ -101,7 +101,7 @@ Drop-in шаблони мають залишатися маленькими. П�
 wp-content/simple-redis-cache-config.php
 ```
 
-Файл повертає повний config-масив, включно з Redis password. Штатні activation/settings callers передають sanitized config, але `write_early_config()` сам не викликає sanitization і лише серіалізує переданий/current config. Запис виконується як temp file + `LOCK_EX` + atomic `rename()`, права — best-effort `0640`, після заміни інвалідується OPcache. Маркер ownership: `Generated by Simple Redis Cache`.
+Файл повертає повний config-масив, включно з Redis password. Штатні activation/settings callers передають sanitized config, але `write_early_config()` сам не викликає sanitization і лише серіалізує переданий/current config. Запис виконується як temp file + `LOCK_EX` + atomic `rename()`, права — best-effort `0640`. Ownership перевіряється двічі: перед створенням temp file і ще раз безпосередньо перед `rename()` — програний race видаляє temp file і повертає `src_config_collision`. Після заміни інвалідується OPcache і скидається static cache `Early_Config`. Маркер ownership: `Generated by Simple Redis Cache`.
 
 Якщо target існує без маркера, його не перезаписують і не видаляють. Якщо early config не вдалося оновити, `Plugin::synchronize()` прибирає обидва власні drop-in: ранньому runtime не дозволено працювати зі старими connection/privacy settings.
 
@@ -113,7 +113,7 @@ wp-content/simple-redis-cache-config.php
 | --- | --- |
 | Option `simple_redis_cache_settings` | Усі налаштування; `autoload=false`. |
 | User meta `_simple_redis_cache_notices` | Черга notices конкретного адміністратора. |
-| Option `_simple_redis_cache_notices` | Fallback notices без user ID; `autoload=false`. |
+| Option `_simple_redis_cache_notices` | Спільна черга для повідомлень, які нікому персонально не адресуєш: `queue_notice()` пише сюди, коли автор запиту не має `manage_options` або user ID дорівнює `0` (cron, frontend, webhook); `autoload=false`. `admin_notices()` вичитує її разом із власною чергою адміністратора. |
 | Site transient `simple_redis_cache_github_update_data` | Кеш GitHub version check. |
 | `wp-content/simple-redis-cache-config.php` | Ранній generated config із credentials; у штатному flow записується sanitized config. |
 | `wp-content/object-cache.php` | Керований object-cache drop-in. |
@@ -126,7 +126,7 @@ Credentials дублюються у WordPress DB та generated PHP config. Не
 
 ## 5. Повна схема конфігурації
 
-Кореневий `config_version` зараз дорівнює `3`. `Config::stored()` читає raw option без defaults, `needs_migration()` порівнює з `Early_Config::CONFIG_VERSION`, а `migrate()` пропускає старий state через поточний sanitizer. Новіший stored schema старішою копією плагіна не downgrade-иться.
+Кореневий `config_version` зараз дорівнює `3`. `Config::stored()` читає raw option без defaults, `needs_migration()` порівнює з `Early_Config::CONFIG_VERSION`, а `migrate()` пропускає старий state через поточний sanitizer. Новіший stored schema старішою копією плагіна не downgrade-иться через `migrate()`: він виходить, щойно stored version не менша за поточну. Це не поширюється на Save: `sanitize()` перебудовує масив із `defaults()` і штампує `CONFIG_VERSION` запущеного коду, тож збереження налаштувань зі старішої копії плагіна опустить schema й відкине ключі, яких вона не знає.
 
 Під час першого звичайного bootstrap після оновлення `Plugin::maybe_upgrade()`:
 
@@ -171,7 +171,7 @@ Password input ніколи не заповнюється назад у HTML. `k
 | --- | --- | --- |
 | `page.enabled` | `false` | Керує `advanced-cache.php`; потребує `WP_CACHE=true`. |
 | `page.ttl` | `3600` | `60..MONTH_IN_SECONDS`. |
-| `page.shared_max_age` | `0` | `0..MONTH_IN_SECONDS`. Нуль — не надсилати заголовок узагалі (поточна поведінка). Ненульове значення додає на HIT `Cache-Control: public, max-age=0, s-maxage=N`: shared cache може зберігати відповідь, браузер щоразу перевіряє. Заголовок формується в `serve()` і **не** входить у збережений payload, тож зміна цього значення не інвалідує кеш — на відміну від решти ключів у `invalidate_changed_settings()`. Наявний `Cache-Control` у збереженій відповіді ніколи не перезаписується. |
+| `page.shared_max_age` | `0` | `0..MONTH_IN_SECONDS`. Нуль — не надсилати заголовок узагалі (поточна поведінка). Ненульове значення додає на HIT `Cache-Control: public, max-age=0, s-maxage=N`: shared cache може зберігати відповідь, браузер щоразу перевіряє. Заголовок додається лише на anonymous HIT. Validated logged-in шлях передає в `serve()` жорсткий `0` і прапорець private: session-specific відповідь не можна пропонувати shared cache, який ключується за URL, а якщо у збереженому payload немає власного `Cache-Control`, runtime надсилає `Cache-Control: private, no-store`. Заголовок формується в `serve()` і **не** входить у збережений payload, тож зміна цього значення не інвалідує кеш: ключа немає у списку `$page_keys` в `invalidate_changed_settings()` — так само, як `debug_header` і `lock_ttl`; решта page-ключів інвалідацію запускають. Наявний `Cache-Control` у збереженій відповіді ніколи не перезаписується. |
 | `page.invalidate_on_post_update` | `false` | На `post_updated` точково змінює content token поточного frontend-viewable post/page/CPT та всіх перекладів, знайдених через documented WPML/Polylang APIs. |
 | `page.invalidate_term_archives_on_post_update` | `false` | На `post_updated`/`set_object_terms` точково змінює content tokens assigned public term archives, old/new relationships і hierarchical ancestors для поста та його перекладів. |
 | `page.cache_logged_in` | `false` | Session/access-specific logged-in variants. |
@@ -182,7 +182,7 @@ Password input ніколи не заповнюється назад у HTML. `k
 | `page.cache_404` | `false` | Тільки status 404. |
 | `page.cache_query_strings` | `false` | Невідомі non-ignored query інакше дають bypass. |
 | `page.ignored_query_parameters` | marketing list | Видаляються з cache key. |
-| `page.excluded_paths` | cart/checkout/account | `*` і `?` patterns. |
+| `page.excluded_paths` | cart/checkout/account | `*` і `?` patterns; матчинг case-insensitive, щоб `/My-Account/*` не переставав працювати мовчки. |
 | `page.excluded_cookies` | auth/cart/session list | Exact, wildcard або conventional `_` prefix. |
 | `page.excluded_user_agents` | `[]` | Case-insensitive substring або wildcard. |
 | `page.vary_cookies` | language-cookie list | Хеш cookie value входить до key. |
@@ -234,21 +234,23 @@ Textarea-списки проходять `sanitize_text_field`, trim, видал
 
 ## 6. Redis connection wrapper
 
-`Simple_Redis_Cache_Redis` підтримує TCP, `tls://`, Unix socket, classic AUTH, ACL AUTH, SELECT database і persistent sockets. Persistent ID — SHA-256 від scheme, host/socket, port, database, username і password, щоб різні connections не ділили сокет.
+`Simple_Redis_Cache_Redis` підтримує TCP, `tls://`, Unix socket, classic AUTH, ACL AUTH, SELECT database і persistent sockets. Persistent ID — `simple-redis-cache-` плюс SHA-256 від scheme, уже нормалізованих host/socket (`tls://` префікс для TLS, шлях сокета і port `0` для unix), port, database, username і password, щоб різні connections не ділили сокет. `timeout`, `read_timeout` і `retry_interval` в identity не входять.
 
-Перед будь-якими операціями wrapper примусово встановлює:
+Одразу після успішного `connect()`/`pconnect()` і перед AUTH, SELECT та будь-якою data-командою wrapper примусово встановлює (кожну опцію — лише якщо відповідні константи PhpRedis визначені):
 
 - `Redis::OPT_SERIALIZER = Redis::SERIALIZER_NONE`;
 - `Redis::OPT_COMPRESSION = Redis::COMPRESSION_NONE`;
 - `Redis::OPT_PREFIX = ''`.
 
-Payload кодує сам плагін, а generation values мають залишатися plain integers. Один wrapper робить лише одну connection attempt. Усі винятки ловляться; `error()` зберігає текст для diagnostics/privileged actions.
+Невдалий `setOption` фатальний: wrapper кидає власний RuntimeException, тож `connect()` повертає `false`, а `client()` — `null`. Краще залишитися без кешу, ніж працювати з чужим serializer або prefix.
+
+Payload кодує сам плагін, а generation values мають залишатися plain integers. Один wrapper робить лише одну connection attempt. Усі винятки ловляться. `error()` описує саме останній виклик: кожна публічна операція скидає попередню помилку на початку. Виняток — невдале підключення: воно робиться один раз, тому зберігається й повертається кожним наступним викликом.
 
 `generation($namespace)` читає `{prefix}meta:{namespace}-generation`. Якщо ключ відсутній, він створюється через `SET NX` із випадковим позитивним integer: 40–52 bits на 64-bit PHP або 20–30 bits на 32-bit із понад мільярдом значень запасу для `INCR`. Після race значення перечитується й строго перевіряється як canonical decimal integer.
 
 `bump_generation()` виконує одним Lua-викликом `missing → random SET → INCR`, тому eviction між окремими командами не може повернути namespace до `1`. Page-generation bump тим самим script видаляє hash page content versions: payload старого global generation уже недосяжний, а нові post/term tokens ініціалізуються заново. При помилці read повертає defensive `1` разом із error; споживачі повинні перевірити error і зробити bypass. Purge повертає `false`/`WP_Error`, якщо generation не можна bump-нути.
 
-`page_content_version($type, $id)` читає field `post:{id}` або `term:{term_taxonomy_id}` зі спільного Redis hash і за відсутності атомарно створює випадковий 128-bit hex token. `bump_page_content_versions()` одним Lua-викликом змінює tokens усіх переданих unique positive resources. Якщо весь hash був evicted, новий random token не збігається з token у старому payload, тому старий HTML не оживає.
+`page_content_version($type, $id)` читає field `post:{id}` або `term:{term_taxonomy_id}` зі спільного Redis hash і за відсутності атомарно створює випадковий 128-bit hex token. `bump_page_content_versions()` одним Lua-викликом змінює tokens усіх переданих unique positive resources і повертає їх кількість; порожній список — це `0` без звернення до Redis. Обидва методи при помилці повертають `false` разом із error: reader тоді робить bypass замість того, щоб віддати payload, а invalidation вважається невдалою. Якщо весь hash був evicted, новий random token не збігається з token у старому payload, тому старий HTML не оживає.
 
 ## 7. Redis namespace і ключі
 
@@ -265,6 +267,7 @@ Payload кодує сам плагін, а generation values мають зали
 {prefix}meta:page-generation
 {prefix}meta:page-content-versions         # Redis hash: post:{ID}/term:{TTID} → 128-bit token
 {prefix}meta:object-group-{sha256(group)}-generation
+{prefix}meta:diagnostic:{sha256(uuid4)}    # тимчасовий ключ connection test: SET NX EX 30, видаляється одразу
 
 {prefix}object:{objectGeneration}:{groupGeneration}:{sha256(group + NUL + key)}
 {prefix}page:{pageGeneration}:{sha256(canonicalRequest)}
@@ -274,13 +277,13 @@ Payload кодує сам плагін, а generation values мають зали
 
 Meta generation keys і `page-content-versions` не мають TTL. Hash очищується під час global page-generation bump; окремі fields змінюються, але не видаляються, під час точкової content invalidation. Object/page payloads мають TTL. Старі generation або content-version payloads після purge залишаються фізично в Redis і звільняються природно за TTL або видаляються best-effort під час наступного stale read.
 
-Якщо allkeys policy видалить generation metadata, випадкова 40–52-bit ініціалізація створює практично новий namespace і не повертає старе покоління `1`. Водночас eviction metadata погіршує hit rate, залишає orphaned payload до TTL і руйнує послідовність manual purge. Тому для передбачуваної роботи все одно бажані `noeviction` або volatile-policy, яка не витісняє persistent meta keys. Плагін лише показує policy у diagnostics і не конфігурує Redis server сам.
+Якщо allkeys policy видалить generation metadata, випадкова 40–52-bit ініціалізація (20–30-bit на 32-bit PHP) створює практично новий namespace і не повертає старе покоління `1`. Водночас eviction metadata погіршує hit rate, залишає orphaned payload до TTL і руйнує послідовність manual purge. Тому для передбачуваної роботи все одно бажані `noeviction` або volatile-policy, яка не витісняє persistent meta keys. Плагін лише показує policy у diagnostics і не конфігурує Redis server сам.
 
 ## 8. Object cache
 
 ### 8.1. Bootstrap та API
 
-`Dropins::install('object')` атомарно встановлює template як `wp-content/object-cache.php`. Loader підключає лише early config і Redis wrapper, відступає на multisite або при `object.enabled=false`, потім оголошує `WP_Object_Cache` і процедурні функції.
+`Dropins::install('object')` атомарно встановлює template як `wp-content/object-cache.php`. Loader підключає лише early config і Redis wrapper і мовчки виходить, якщо хоча б один із цих файлів не readable. Далі він відступає на multisite або при `object.enabled=false`, а вже потім підключає `WP_Object_Cache` (лише коли клас ще не оголошено) і процедурні функції, кожна з яких захищена `function_exists()`. У всіх трьох випадках виходу drop-in не оголошує `wp_cache_init()`, тому WordPress вантажить власний runtime cache.
 
 Підтримано:
 
@@ -290,7 +293,10 @@ Meta generation keys і `page-content-versions` не мають TTL. Hash очи
 - flush, flush_runtime, flush_group;
 - global/non-persistent groups;
 - switch/reset/close/stats;
-- WordPress 6.9+ salted helper functions.
+- WordPress 6.9+ salted helper functions;
+- аліаси `increment()`/`decrement()`, які просто делегують в `incr()`/`decr()` для старих інтеграцій.
+
+Публічними також лишаються `$cache`, `$cache_hits`, `$cache_misses`, `$global_groups`, `$non_persistent_groups`, `$blog_prefix`, `$multisite` і `$errors` — їх читають сторонні diagnostics-плагіни. `$errors` збирає не лише Redis-помилки: `encode()` дописує туди й помилки серіалізації.
 
 `wp_cache_supports()` декларує `add_multiple`, `set_multiple`, `get_multiple`, `delete_multiple`, `flush_runtime`, `flush_group`.
 
@@ -328,13 +334,14 @@ Object payload декодується native `unserialize()` з дозволен
 ### 8.4. Семантика методів
 
 - `set()` пише L1, best-effort Redis і optional transient mirror; Redis outage не робить runtime write неуспішним.
-- `add()` поважає `wp_suspend_cache_addition()`, L1 і DB mirror; Redis використовує atomic `SET NX EX`. NX collision повертає `false`. Якщо Redis недоступний (`null`, а не NX `false`), поточна реалізація fail-open записує L1 і повертає `true`, тому cross-request uniqueness під час outage не гарантована.
-- `replace()` для Redis використовує `SET XX EX`; DB-only transient спочатку rewarm-иться через NX. Під час outage успіх можливий лише коли наявність доведена L1/DB.
+- Значення, яке не серіалізується (наприклад closure), — це певна відмова, а не outage: `store_redis()` повертає `false` ще до звернення до Redis, `add()` віддає `false`, а DB mirror такий запис не пише, щоб `maybe_serialize()` усередині `update_option()` не завалив запит.
+- `add()` поважає `wp_suspend_cache_addition()`, L1 і DB mirror; Redis використовує atomic `SET NX EX`. NX rejection не приймається на віру: `store_redis()` перевіряє ключ через `EXISTS`, і лише підтверджене існування повертає `false`. Якщо ключ зник між `SET` і `EXISTS`, `SET NX EX` повторюється один раз; друге відхилення без підтвердженого `EXISTS` трактується як outage — instance ставить `redis_failed` і повертає `null`. Якщо Redis недоступний (`null`, а не NX `false`), поточна реалізація fail-open записує L1 і повертає `true`, тому cross-request uniqueness під час outage не гарантована.
+- `replace()` для Redis використовує `SET XX EX`; DB-only transient спочатку rewarm-иться через NX. Під час outage успіх можливий лише коли наявність доведена L1/DB. Для mirrored групи, оголошеної non-persistent, наявність теж підтверджується з DB mirror, і туди ж іде заміна.
 - `get()` іде L1 → Redis → DB mirror. DB hit rewarm-ить Redis через NX; Redis winner має пріоритет при race. Forced read може повернути попередній L1, якщо Redis упав у цьому request.
 - `delete()` прибирає L1, Redis і відповідний DB mirror.
-- Для persistent Redis groups `incr()`/`decr()` використовують `WATCH → GET → PTTL → MULTI → SET PX → EXEC`, до п'яти retry, зберігають remaining TTL і не опускають результат нижче нуля. Non-persistent або fail-open fallback працює через L1/DB без cross-request atomicity.
-- `flush()` bump-ить object generation, чистить L1 і, тільки коли DB mirror enabled, обидві transient-групи у БД.
-- `flush_group()` bump-ить generation лише persistent групи. Звичайна non-persistent group очищається лише з L1; mirrored `transient`/`site-transient` додатково видаляють DB rows та намагаються інвалідувати options-group generation.
+- Для persistent Redis groups `incr()`/`decr()` використовують `WATCH → GET → PTTL → MULTI → SET PX → EXEC`, щонайбільше п'ять спроб (retry лише тоді, коли `EXEC` повертає `false` через WATCH-конфлікт), зберігають remaining TTL і не опускають результат нижче нуля. Вичерпані спроби дають статус `failed`: запис прибирається з L1, метод повертає `false` без fallback. Якщо Redis повідомляє `missing`, а DB mirror увімкнений, значення спочатку rewarm-иться з БД через NX і атомарна операція повторюється; недоступний rewarm пише L1 і переводить статус у `unavailable`. До L1/DB fallback без cross-request atomicity доходять лише non-persistent групи та статус `unavailable`.
+- `flush()` bump-ить object generation, чистить L1 і, тільки коли DB mirror enabled, видаляє з `wp_options` усі рядки `_transient_*` та `_site_transient_*` — тобто всі стандартні WordPress transients, включно з чужими. Це робить будь-який виклик `wp_cache_flush()` (наприклад, WP-CLI `wp cache flush`), а не лише confirmed purge. Видалення гейтиться успіхом bump так само, як у `Purger::purge()`: якщо потрібний bump не вдався, рядки зберігаються, а метод повертає `false`. Коли object cache вимкнено, bump не потрібен і mirror очищується як звичайно.
+- `flush_group()` bump-ить generation лише persistent групи. Звичайна non-persistent group очищається лише з L1; mirrored `transient`/`site-transient` додатково видаляють з `wp_options` усі рядки відповідного префікса (не лише власний mirror). Спершу інвалідується options-group generation, і невдалий bump скасовує сам DELETE: інакше stale Redis-копія групи `options` воскресила б щойно видалені рядки через `get_option()`. Для групи, оголошеної non-persistent, власний group bump не потрібен, але options-bump усе одно виконується, тож за недоступного Redis `flush_group()` теж поверне `false` і рядки збереже.
 
 Після першої runtime Redis-помилки instance встановлює `redis_failed`; наступних Redis attempts у цьому request немає. L1 і DB mirror продовжують працювати.
 
@@ -376,29 +383,30 @@ Scheme визначається через `HTTPS`/`SERVER_PORT`, а не forwar
 
 Browser reload часто надсилає request `Cache-Control: no-cache`, `max-age=0` та/або `Pragma: no-cache`. Ці директиви навмисно не обходять server-side Redis page cache: звичайний і hard reload можуть отримати HIT. `Cache-Control: no-store`, Range та conditional headers залишаються BYPASS, оскільки cached 200 не реалізує byte ranges або HTTP preconditions.
 
-Завжди unsafe query names перевіряються до ignore rules: nonces, preview/customizer, REST route, cart actions, cron і builder-preview parameters. Query pair order зберігається. Ignored names вилучаються з key. Якщо `cache_query_strings=false`, non-ignored query дає bypass, крім вузького search-набору `s`, `paged`, `post_type` за ввімкненого search cache.
+Завжди unsafe query names перевіряються до ignore rules: nonces, preview/customizer, REST route, cart actions, cron, builder-preview parameters і посилання модерації коментарів (`unapproved`, `moderation-hash`), бо core обмежує показ pending-коментаря лише десятьма хвилинами під час рендеру. Порівняння відбувається з тим іменем, яке реально отримає WordPress. PHP переписує назву параметра перед `$_GET`: прибирає провідні пробіли, а кожен пробіл, крапку й **незакриту** `[` замінює на `_`; закрита `[…]` — це вже масив, і назва обрізається по ній. Тому `?rest.route=…` і `?rest[route=…` доходять як `rest_route`, `?.wpnonce=…` як `_wpnonce`, а `?rest[route]=…` — як безпечний `rest`. Матчинг сирої назви пропускав би більшу частину списку. Ту саму нормалізовану назву використовують ignore-патерни й search-allowlist; сирі назви лишаються в cache key. Query pair order зберігається. Ignored names вилучаються з key. Якщо `cache_query_strings=false`, non-ignored query дає bypass, крім вузького search-набору `s`, `paged`, `post_type` за ввімкненого search cache.
 
 Звичайні cookies не входять до key. Core auth-cookie завжди дає early bypass, коли logged-in caching disabled, включно зі stale/revoked cookie. Коли logged-in caching enabled, два default auth exclusions замінюються hashed session variant і late WordPress validation. Інша excluded cookie дає bypass, крім випадку, коли ця сама cookie явно налаштована як vary-cookie. Vary-cookie додає SHA-256 свого значення; до variant також входить vary specification, тому зміна списку створює інший key space.
 
 ### 9.2. Canonical page key
 
-Canonical request містить version marker, scheme, configured host, port, raw path, canonical query і hash cookie variant. Фінальний key:
+Canonical request — це з'єднані через `\n` рядки: літеральний version marker `simple-redis-cache-page-v1` (не пов'язаний ні з `CONFIG_VERSION`, ні з версією payload; змінюється лише разом зі складом key), scheme, configured host, validated request port, raw path, canonical query і hash cookie variant. Фінальний key:
 
 ```text
 {prefix}page:{pageGeneration}:{sha256(canonicalRequest)}
 ```
 
-Anonymous GET/HEAD HIT валідує payload. Якщо відповідна opt-in invalidation активна і payload прив'язаний до post ID або term-taxonomy ID, ранній reader додатково порівнює payload token із field у `page-content-versions`; mismatch видаляє exact stale key і переходить у MISS, Redis failure дає BYPASS. Після успішної перевірки runtime відтворює status і safe headers, друкує body лише для GET та робить `exit` до завантаження WordPress.
+Anonymous GET/HEAD HIT валідує payload. Якщо відповідна opt-in invalidation активна і payload прив'язаний до post ID або term-taxonomy ID, ранній reader додатково порівнює payload token із field у `page-content-versions`; mismatch видаляє exact stale key і переходить у MISS, Redis failure дає BYPASS. Після успішної перевірки runtime відтворює status і safe headers, за ненульового `page.shared_max_age` і відсутнього збереженого `Cache-Control` додає `Cache-Control: public, max-age=0, s-maxage=N`, друкує body лише для GET та робить `exit` до завантаження WordPress.
 
 ### 9.3. Anonymous MISS
 
 1. HEAD MISS нічого не рендерить для кешу.
 2. GET намагається отримати `SET lock NX EX 10`.
 3. Конкурент без lock не чекає — рендерить uncached response.
-4. Власник lock продовжує bootstrap.
+4. Власник lock продовжує bootstrap. Якщо `wp_cache_postload()` уже оголошено іншим drop-in чи компонентом, loader звільняє власний lock і робить BYPASS замість реєстрації свого callback.
 5. `wp_cache_postload()` запускається після loading active plugin files, але до `plugins_loaded`.
 6. Якщо рівень output buffers змінився порівняно з very-early фазою, anonymous storage навмисно робить BYPASS: ранній HIT не зміг би відтворити outer plugin transform.
 7. Інакше `Page_Capture` відкриває buffer, а пізні inner transforms потрапляють у фінальний captured HTML.
+8. Зберігається лише буфер, який дійсно віддано: `handle_output()` вимагає `PHP_OUTPUT_HANDLER_FINAL` без `PHP_OUTPUT_HANDLER_CLEAN`. Пізній `ob_end_clean()` — maintenance mode, заміна відповіді, `echo apply_filters( …, ob_get_clean() )` — теж рапортує FINAL, але його вміст ніхто не отримав, тому в кеш він не йде.
 
 Не прибирати перевірку output-buffer level без повного аналізу раннього HIT parity.
 
@@ -406,7 +414,7 @@ Anonymous GET/HEAD HIT валідує payload. Якщо відповідна opt
 
 Logged-in caching disabled за замовчуванням. Якщо enabled, core auth-cookie value хешується в session variant. Early runtime уже підключається до Redis і читає page-generation metadata, але не читає page payload і не бере lock до validation WordPress session.
 
-На late `template_redirect`/`template_include` перевіряються `wp_validate_auth_cookie()`, current user ID, page type/status і вже встановлені security/cache headers. До key додається SHA-256 від user ID, sorted roles і resolved capabilities. Fake/revoked cookie дає bypass. Callback не видає HIT, якщо після нього на тому самому `PHP_INT_MAX` є пізніший template filter.
+На late `template_redirect`/`template_include` перевіряються `wp_validate_auth_cookie()`, current user ID, page type/status і вже встановлені security/cache headers. До key додається SHA-256 від user ID, sorted roles і resolved capabilities. Fake/revoked cookie дає bypass. Якщо після нього на тому самому `PHP_INT_MAX` зареєстрований пізніший `template_include` filter, callback повністю відмовляється від кешування цього запиту: BYPASS без HIT і без MISS storage.
 
 Logged-in HEAD завжди bypass. Key не включає довільні user meta або application state; персоналізація в межах тієї самої session може застаріти. Custom auth/personalization cookies потрібно exclude або безпечно vary.
 
@@ -439,6 +447,8 @@ array(
 
 Read використовує `unserialize(..., ['allowed_classes' => false])`. Payload v1 і v2 читаються для backward compatibility лише коли їхня відсутня content-token семантика не потрібна; schema migration або перемикання будь-якої invalidation option bump-ить page-generation до застосування нових правил. V2 legacy `post_id`/`post_version` нормалізуються в post resource. `stored_at` інформаційний; freshness визначають Redis TTL, global page generation і optional post/term content token. Немає compression і size cap.
 
+Крім response-валідації, `maybe_store()` має ще чотири PHP-side виходи, коли ввімкнена content invalidation: колбек `wp` не встиг відпрацювати; queried resource зник до shutdown, хоча в snapshot був; його тип або ID змінилися; для наявного resource не вдалося отримати token. У всіх цих випадках payload не пишеться, а debug header лишається `MISS`.
+
 ### 9.6. Header policy
 
 - `Set-Cookie` забороняє storage, якщо кожне cookie name не allowlisted.
@@ -447,8 +457,9 @@ Read використовує `unserialize(..., ['allowed_classes' => false])`. 
 - `Content-Type`, якщо є, має бути `text/html` або `application/xhtml+xml`.
 - `Content-Encoding` забороняє storage; Redis містить uncompressed body.
 - `Vary` дозволяє тільки `Accept-Encoding`.
-- `private`, `no-store`, `no-cache` зазвичай заборонені. Виняток — точний стандартний WordPress no-cache набір для validated logged-in variant або opted-in anonymous 404.
+- `private`, `no-store`, `no-cache` зазвичай заборонені. Виняток — один із двох точних стандартних WordPress no-cache наборів (`max-age=0, must-revalidate, no-cache` або той самий набір із доданими `no-store, private`) для validated logged-in variant чи opted-in anonymous 404; будь-яка інша комбінація директив забороняє storage.
 - `Pragma: no-cache` заборонений.
+- На anonymous HIT `serve()` додатково надсилає `Cache-Control: public, max-age=0, s-maxage=N`, якщо `page.shared_max_age >= 1` і у збереженому payload немає власного `Cache-Control`. Validated logged-in HIT цього заголовка не отримує ніколи; замість нього за відсутнього збереженого `Cache-Control` надсилається `private, no-store`. Заголовок формується в runtime, не входить у payload, не впливає на eligibility й не bump-ить page generation.
 
 ### 9.7. Stampede lock
 
@@ -457,6 +468,8 @@ SET {finalPageKey}:lock {randomToken} NX EX {lockTTL}
 ```
 
 Payload write і lock delete виконуються одним Lua script лише якщо token досі належить renderer. Для payload, прив'язаного до post ID або term-taxonomy ID, той самий script також перевіряє, що content token не змінився від моменту `wp`/late logged-in snapshot; update під час render видаляє власний lock і забороняє stale write. Повільний request після expiry не може overwrite новіший payload або видалити чужий lock. Звичайний release також token-checked Lua. Lock queue/stale serving немає.
+
+Поки capture buffer відкритий, loader тримає його lock: `release_lock()` відмовляє й повертає `false`. Інакше на сайті, який зняв core-ний `wp_ob_end_flush_all()` із shutdown, буфер фіналізується вже після shutdown-стека, lock устиг би зникнути, write script побачив би чужий token — і сторінка мовчки ніколи не кешувалася б. Після фіналізації або discard претензія знімається, і release відбувається штатно.
 
 Debug header:
 
@@ -477,23 +490,30 @@ X-Simple-Redis-Cache: HIT | MISS | BYPASS
 
 Остання операція виконується незалежно від `transient_db_fallback` і не може відрізнити mirror цього плагіна від інших WordPress transients. Це поточна свідома семантика кнопки object purge.
 
-Object/all потребують окремої confirmation-сторінки та POST із capability + scope-specific nonce + `confirmed=1`. Page-only purge лишається прямою nonce-protected дією, бо не видаляє DB rows. Якщо object-generation bump не вдався, DB transients навмисно зберігаються. Purge не транзакційний: `all` усе ще може успішно інвалідовувати один Redis layer і повернути `WP_Error` через інший.
+Object/all потребують окремої confirmation-сторінки та POST із capability + scope-specific nonce + `confirmed=1`. Page-only purge лишається прямою nonce-protected дією, бо не видаляє DB rows. Якщо object-generation bump не вдався, DB transients навмисно зберігаються. Purge не транзакційний: `all` усе ще може успішно інвалідовувати один Redis layer і повернути `WP_Error` через інший. Жоден scope не досягає shared cache: за `page.shared_max_age > 0` копія HIT, яку CDN або reverse proxy зберіг за `s-maxage`, живе до закінчення власного часу — плагін не має CDN purge, тож очищення edge лишається на операторові.
 
 ### 10.1. Опційна інвалідація після оновлення контенту
 
-`Simple_Redis_Cache_Page_Invalidator` завжди реєструє core hooks `post_updated` і `set_object_terms`, але виходить без роботи, доки HTML-кеш та хоча б одна з двох invalidation options не ввімкнені. На `post_updated` він ігнорує revisions/autosaves та працює лише для frontend-viewable post types. Current post ID і translation IDs збираються одразу після core update та повторно на `shutdown`, після пізніх save callbacks, щоб охопити translation relationships до і після таких callbacks у межах request. Polylang інтегрується через `pll_get_post_translations()` лише після `function_exists`; WPML — через documented `wpml_element_type`, `wpml_element_trid` та `wpml_get_element_translations` filters лише коли hooks зареєстровані. Post content tokens фактично змінюються тільки коли `page.invalidate_on_post_update=true`.
+`Simple_Redis_Cache_Page_Invalidator` завжди реєструє core hooks `post_updated` і `set_object_terms`, але виходить без роботи, доки HTML-кеш та хоча б одна з двох invalidation options не ввімкнені. На `post_updated` він ігнорує revisions/autosaves та працює лише для frontend-viewable post types. Current post ID і translation IDs збираються одразу після core update та повторно на `shutdown`, після пізніх save callbacks, щоб охопити translation relationships до і після таких callbacks у межах request. ID перекладів проходять ту саму перевірку frontend-viewable, що й сам пост, тому осиротілий multilingual-зв'язок не додає в hash поля, до якого не може прив'язатися жоден payload. Polylang інтегрується через `pll_get_post_translations()` лише після `function_exists`; WPML — через documented `wpml_element_type`, `wpml_element_trid` та `wpml_get_element_translations` filters лише коли hooks зареєстровані. Post content tokens фактично змінюються тільки коли `page.invalidate_on_post_update=true`.
 
-Коли `page.invalidate_term_archives_on_post_update=true`, той самий invalidator додатково слухає `set_object_terms` із повними old/new `term_taxonomy_id`. Він обробляє лише taxonomies, для яких `is_taxonomy_viewable()` повертає true, збирає current terms оновленого поста та його перекладів до й після пізніх save callbacks і додає ancestors через `get_ancestors()`. Так зміна категорії інвалідує old і new archives, а hierarchical parent archives очищуються тому, що можуть включати child content. Зв'язки translated posts дають tokens відповідних translated term archives без залежності від внутрішніх API мультимовних плагінів.
+Коли `page.invalidate_term_archives_on_post_update=true`, той самий invalidator додатково слухає `set_object_terms` із повними old/new `term_taxonomy_id`. Хук фаєриться для будь-якого типу об'єкта, а його `object_id` унікальний лише в межах таксономії, тому обробник додатково вимагає, щоб post type оновленого об'єкта був зареєстрований саме для цієї таксономії: інакше terms на users чи comments зі збіжним ID інвалідували б сторонній пост. Він обробляє лише taxonomies, для яких `is_taxonomy_viewable()` повертає true, збирає current terms оновленого поста та його перекладів до й після пізніх save callbacks і додає ancestors через `get_ancestors()`. Так зміна категорії інвалідує old і new archives, а hierarchical parent archives очищуються тому, що можуть включати child content. Зв'язки translated posts дають tokens відповідних translated term archives без залежності від внутрішніх API мультимовних плагінів.
 
-На shutdown усі post і term-taxonomy resources одним Redis Lua call отримують нові random tokens. Це логічно інвалідує всі їхні HTML variants: pagination, query-string, language-cookie та optional logged-in/session/access variants. Exact Redis payload фізично видаляється під час наступного stale read або природно за TTL. Static front/posts page також інвалідується, коли queried object є саме оновленим `WP_Post`. Опції singular і taxonomy invalidation незалежні. Непов'язані term archives та generic home/post-type/author/date/search/404/menu/comment/WooCommerce-derived pages не очищуються. Пряма зміна post meta без `post_updated` не очищає singular payload; пряма зміна term relationship через WordPress API все одно потрапляє в `set_object_terms`, а за одночасно ввімкненої singular invalidation також змінює token самого post.
+На shutdown усі post і term-taxonomy resources одним Redis Lua call отримують нові random tokens. Це логічно інвалідує всі їхні HTML variants у Redis: pagination, query-string, language-cookie та optional logged-in/session/access variants. За ненульового `page.shared_max_age` копію, яку shared cache зберіг за `s-maxage`, token bump не змінює — CDN треба чистити окремо. Exact Redis payload фізично видаляється під час наступного stale read або природно за TTL. Static front/posts page також інвалідується, коли queried object є саме оновленим `WP_Post`. Опції singular і taxonomy invalidation незалежні. Непов'язані term archives та generic home/post-type/author/date/search/404/menu/comment/WooCommerce-derived pages не очищуються. Інвалідатор слухає лише `post_updated` і `set_object_terms`, тому низка звичайних core-подій не bump-ить жодного token і лишає HTML валідним до TTL чи ручного page purge:
 
-Якщо Redis invalidation не вдалася, save WordPress лишається успішним у fail-open режимі, а адміністратору ставиться warning notice. На відміну від settings-policy transition, runtime/drop-in не вимикаються: старий HTML може жити до TTL або ручного page purge.
+- остаточне видалення поста;
+- перейменування, злиття або видалення самого терміна: `wp_delete_term()` знімає зв'язки через `wp_remove_object_terms()`, який фаєрить `delete_term_relationships`/`deleted_term_relationships`, а не `set_object_terms`;
+- будь-яке зняття зв'язку через `wp_remove_object_terms()` з тієї ж причини; хук ловить лише ту гілку видалення, що відбувається всередині `wp_set_object_terms()`;
+- публікація за розкладом: `wp_publish_post()` міняє статус прямим `$wpdb->update()` і фаєрить `edit_post`/`save_post`/`wp_insert_post`, але не `post_updated`. Виняток — пост без категорії, якому default term призначається через `wp_set_post_terms()`, і то лише за ввімкненого `invalidate_term_archives_on_post_update`.
+
+Пряма зміна post meta без `post_updated` не очищає singular payload. Присвоєння термів через `wp_set_object_terms()`/`wp_set_post_terms()` без `wp_insert_post()` потрапляє в `set_object_terms`, але handler виходить одразу, якщо вимкнено саме `invalidate_term_archives_on_post_update`; за одночасно ввімкненої singular invalidation той самий виклик змінює й token самого post.
+
+Якщо Redis invalidation не вдалася, save WordPress лишається успішним у fail-open режимі, а в чергу ставиться warning notice. `queue_notice()` кладе його в user meta лише тоді, коли автор запиту має `manage_options`; save від Редактора, з frontend, webhook або cron іде у спільну option-чергу, яку наступний адміністратор вичитує разом із власною. На відміну від settings-policy transition, runtime/drop-in не вимикаються: старий HTML може жити до TTL або ручного page purge.
 
 ### 10.2. Ручний прогрів HTML-кешу
 
 `Simple_Redis_Cache_Warmer::discover()` приймає тільки три списки machine names, які перетинає з актуальними `get_post_types( ['public' => true] )`, `get_taxonomies( ['public' => true] )` та allowlist системних джерел. Довільний URL від input не генерує кеш-запит. Post types/taxonomies додатково мають бути frontend-viewable, а URL має відповідати enabled `cache_home`/`cache_singular`/`cache_archives` flags. Discovery додає та deduplicate-ить лише URL з тим самим scheme/host/effective port, що й `home_url()`:
 
-- головну; окремо posts page та її estimated pagination (якщо обидва URL збігаються, deduplication лишає один базовий URL);
+- головну; окремо posts page та її estimated pagination. Deduplication порівнює normalized key (scheme, host, effective port, path без кінцевого слеша, query), тому `home_url('/')` і `get_home_url()` за `show_on_front = posts` дають один запис. Регістр path зберігається: WordPress може віддавати `/A/` і `/a/` як різні записи;
 - author і наявні year/month/day archives із estimated pagination;
 - public non-password singular posts/pages/CPT і public post type archives;
 - непорожні public taxonomy term archives та estimated pagination.
@@ -516,7 +536,7 @@ POST wp_ajax_simple_redis_cache_prepare_warm + manage_options + nonce
   → тільки фінальний HIT = warmed
 ```
 
-Кожен browser HEAD/GET має власний `AbortController` і 30-секундний timeout. Timeout або network failure переходить до protected server fallback; global Stop abort не запускає fallback і зупиняє весь цикл. Browser path чекає `retryDelay` (default 250 мс) перед другим циклом; server fallback використовує 30-second WordPress HTTP timeout без явної затримки. Redirect не вважається успішним прогрівом: browser Fetch відхиляє `response.redirected`, а loopback має `redirection=0`.
+Discovery обмежене `MAX_DISCOVERED_URLS` (20000): pagination видається на кожну оцінену сторінку кожного автора, дати, архіву й терміна, тож набір може набагато перевищити кількість постів. Досягнення межі не мовчазне — воно додає warning. Сам виклик discovery має власний 120-секундний timeout, інакше вкладка нескінченно показувала б «preparing». Кожен browser HEAD/GET має власний `AbortController` і 30-секундний timeout. Timeout або network failure переходить до protected server fallback; global Stop abort не запускає fallback і зупиняє весь цикл. Browser path чекає `retryDelay` (default 250 мс) перед другим циклом; server fallback використовує 30-second WordPress HTTP timeout без явної затримки. Redirect не вважається успішним прогрівом: browser Fetch відхиляє `response.redirected`, а loopback має `redirection=0`.
 
 Warm request header `X-Simple-Redis-Cache-Warm: 1` лише примусово показує `X-Simple-Redis-Cache` для цієї відповіді. Він не змінює eligibility, canonical key, cookies або cache semantics. Effective debug flag передається через early-loader context до `Page_Capture`. На `send_headers` некешовний WordPress page type може замінити ранній `MISS` на `BYPASS`; пізніша відмова через status, response headers, incomplete HTML, lock або Redis може залишити header `MISS`. Тому лише наступний `HIT` підтверджує storage.
 
@@ -536,7 +556,7 @@ Warmup не очищає generation і не перезаписує valid existin
 
 Menu slug залишається спільним, а Settings API sections реєструються на внутрішніх page IDs `simple-redis-cache-{tab}`. `tab` читається тільки як string, проходить `wp_unslash()`/`sanitize_key()` та allowlist; невідоме значення повертає `redis`.
 
-Форми перших трьох вкладок передають marker `simple_redis_cache_settings[_settings_tab]`. `Admin::sanitize_settings()` зливає на сервері тільки надіслану групу з поточним повним config, після чого передає результат у `Config::sanitize()`. Так збереження однієї вкладки не скидає дві інші, unchecked checkbox активної вкладки все одно стає `false`, а Redis password не копіюється в hidden HTML. Без marker зберігається сумісна поведінка sanitization повного payload. Вкладки `warm` і `status` не мають Settings API form і не виконують Save.
+Форми перших трьох вкладок передають marker `simple_redis_cache_settings[_settings_tab]`. `Admin::sanitize_settings()` зливає на сервері тільки надіслану групу з поточним повним config, після чого передає результат у `Config::sanitize()`. Якщо marker присутній, але tab поза allowlist `FORM_TABS` або відповідної групи немає в payload, злиття не відбувається: додається settings error `src_invalid_settings_tab` і повертається поточний збережений config без змін. Так збереження однієї вкладки не скидає дві інші, unchecked checkbox активної вкладки все одно стає `false`, а Redis password не копіюється в hidden HTML. Без marker зберігається сумісна поведінка sanitization повного payload. Вкладки `warm` і `status` не мають Settings API form і не виконують Save.
 
 Hooks:
 
@@ -551,6 +571,8 @@ Hooks:
 Connection test і purge перевіряють capability та nonce. Test працює із вже збереженими, а не unsaved полями: після PING він створює ізольований plugin-prefixed key через `SET NX EX 30`, перевіряє точний GET і DELETE, не показуючи credentials. Optional `INFO server/memory` додає Redis version та `maxmemory_policy`; заборонений ACL-командами INFO не робить сам test невдалим.
 
 Status diagnostics показує PhpRedis/connection, scheme/database без credentials, Redis version/policy, owned/foreign/missing drop-ins з абсолютними шляхами й octal modes, `WP_CACHE`, generated config ownership/readability/mode/synchronization fingerprint і фактичний prefix. Group/other-writable drop-in та config permissions ширші за `0640` або stricter позначаються warning. `allkeys-*` також дає рекомендацію `noeviction`/`volatile-*`.
+
+`Config::get()` навмисно читає option прямим SQL, тому `render_field()` мемоізує результат у `Admin::$render_config` на час запиту: інакше кожне поле форми давало б окремий uncached запит. Кешувати всередині `Config` не можна — саме свіже читання дозволяє виявити паралельний Save.
 
 Під час sanitization додається shutdown sync на `PHP_INT_MAX`, щоб повторний Save міг виправити permission/collision навіть коли option value не змінився. `Plugin::$last_config_hash` запобігає duplicate sync у тому самому request.
 
@@ -598,7 +620,7 @@ Marker — heuristic, не signature. Не послаблювати переві
 
 ### Settings save
 
-`settings_updated()` бере old runtime із plugin-owned generated config (fallback — sanitized old option), sanitize-ить new config і порівнює лише semantic policy subsets. Зміна object policy bump-ить активний object namespace; зміна page policy — активний page namespace. Transport tuning (`timeout`, `read_timeout`, `retry_interval`, `persistent`) і page `debug_header` payload semantics не змінюють та generation не bump-ять.
+`settings_updated()` бере old runtime із plugin-owned generated config (fallback — sanitized old option), sanitize-ить new config і порівнює лише semantic policy subsets. Зміна object policy bump-ить активний object namespace; зміна page policy — активний page namespace. Transport tuning (`timeout`, `read_timeout`, `retry_interval`, `persistent`), page `debug_header` і page `shared_max_age` payload semantics не змінюють та generation не bump-ять. `shared_max_age` навмисно не входить у `$page_keys`: заголовок `Cache-Control: public, max-age=0, s-maxage=N` формується у `serve()` раннього loader і не зберігається в payload, тому нове значення діє вже на наступному HIT без інвалідації.
 
 Зміна Redis scheme/endpoint/database/credentials, generated fallback prefix або site host/port вважається зміною storage identity. Активні шари best-effort bump-яться і на старому, і на новому target, щоб повернення до попереднього target не оживило старий namespace. Password входить лише в hashed identity і ніколи не в notice/log/key.
 
@@ -606,7 +628,7 @@ Marker — heuristic, не signature. Не послаблювати переві
 
 Після успішної інвалідації атомарно пишеться early config, потім install/remove drop-ins. Якщо early write failed, обидва owned drop-ins видаляються.
 
-Якщо хоча б один потрібний generation bump не вдався, `apply_saved_config()` не пише new semantics у ранній runtime. `defer_failed_invalidation()` повторно читає authoritative DB state і через `Config::runtime(true)` — фактичний generated runtime після потенційно довгого PhpRedis-виклику. Потім `defer_runtime_config()` зберігає останню trustworthy connection/site identity, консервативно ставить обидва `enabled=false`, видаляє обидва owned drop-in як другу safety net і показує error notice. Так паралельний Save не можна частково відкотити зі старою, але все ще активною політикою іншого шару. Saved DB option не відкочується. `Admin::sanitize_settings()` завжди планує `apply_saved_config()` на shutdown, навіть коли `update_option()` short-circuit-нув unchanged value; окрім того, наступний authorized admin bootstrap автоматично викликає `maybe_recover_runtime()`. Після successful retry new config атомарно записується, а потрібні drop-in повертаються. Один fingerprint old/new виконується щонайбільше раз за request.
+Якщо хоча б один потрібний generation bump не вдався, `apply_saved_config()` не пише new semantics у ранній runtime. `defer_failed_invalidation()` повторно читає authoritative DB state і через `Config::runtime(true)` — фактичний generated runtime після потенційно довгого PhpRedis-виклику. Потім `defer_runtime_config()` зберігає останню trustworthy connection/site identity, консервативно ставить обидва `enabled=false`, видаляє обидва owned drop-in як другу safety net і показує error notice. Так паралельний Save не можна частково відкотити зі старою, але все ще активною політикою іншого шару. Saved DB option не відкочується. `Admin::sanitize_settings()` планує `apply_saved_config()` на shutdown для кожного прийнятого payload, навіть коли `update_option()` short-circuit-нув unchanged value (відхилений `_settings_tab` marker виходить раніше й нічого не планує); окрім того, наступний authorized admin bootstrap автоматично викликає `maybe_recover_runtime()`. Після successful retry new config атомарно записується, а потрібні drop-in повертаються. Один fingerprint old/new виконується щонайбільше раз за request.
 
 `apply_saved_config_attempt()` оптимістично перечитує authoritative DB config до інвалідації, безпосередньо перед filesystem sync і після нього. Якщо concurrent Save змінив target snapshot, операція повторюється з актуальним config; після трьох нестабільних спроб обидва потенційно active layers переходять у той самий fail-safe disabled state до наступного authorized admin retry. Так повільніший recovery request не може надовго повернути старішу early config поверх новішого DB option.
 
@@ -623,7 +645,7 @@ Object settings invalidation перемикає Redis namespace, але не в�
 
 ### Update
 
-WordPress update не запускає activation hook. Тому normal `plugins_loaded` виконує versioned `maybe_upgrade()` до ініціалізації admin/updater hooks. Для старішої schema він normalize-ить option, інвалідує enabled cache semantics, регенерує early config і resync-ить templates. Поточна schema `3` додає opt-in targeted content invalidation settings і payload v3. Loaders у plugin directory оновлюються разом із кодом. Кожне майбутнє schema change повинно підняти `Early_Config::CONFIG_VERSION`, додати transform за потреби й розширити migration tests.
+WordPress update не запускає activation hook. Тому normal `plugins_loaded` виконує versioned `maybe_upgrade()` до ініціалізації admin/updater hooks. Для старішої schema він normalize-ить option, інвалідує enabled cache semantics, регенерує early config і resync-ить templates. Поточна schema `3` додає opt-in targeted content invalidation settings і payload v3; у 0.4.0 в межах тієї самої schema `3` з'явився page `shared_max_age` — суто additive ключ, default якого підмішується через `Config::merge()`/`Early_Config::load()`, тому bump не був потрібен. Loaders у plugin directory оновлюються разом із кодом. Кожне майбутнє schema change повинно підняти `Early_Config::CONFIG_VERSION`, додати transform за потреби й розширити migration tests; суто additive ключ із безпечним default може лишитися в поточній schema, але це має бути свідомим рішенням.
 
 ### Uninstall
 
@@ -666,6 +688,8 @@ https://github.com/vitaliikaplia/simple-redis-cache/archive/refs/heads/master.zi
 
 Hooks: `pre_set_site_transient_update_plugins`, `site_transient_update_plugins`, `plugins_api`, `upgrader_source_selection` priority 11, `delete_site_transient_update_plugins`, `upgrader_process_complete`.
 
+Фільтр транзієнта повертає значення без змін, якщо це не об'єкт або в ньому немає `checked`. Створювати порожній `stdClass` не можна: тоді core-ний `false` став би truthy, і `delete_plugins()` пішов би гілкою «update data є» та матеріалізував транзієнт без `last_checked`.
+
 Успіх кешується site transient на 12 годин, failure — на 1 годину. Успішні metadata містять `version`, branch package URL, repository URL, `branch=master` і timestamp. Authorized admin `?force-check=1` обходить persistent cache; один updater instance робить не більше однієї remote attempt у request. HTTP: 10-second timeout, 3 redirects, 64 KiB limit, 2xx only. Версія читається з `Version:` і порівнюється через `version_compare()`.
 
 `Update URI` у main header не дає WordPress.org підмінити same-slug plugin. `plugins_api` надає стандартну details modal. `upgrader_source_selection` приймає canonical root або будь-який root із префіксом `simple-redis-cache-` (зокрема `simple-redis-cache-master`) і перейменовує його у фактичну поточну installed directory, зберігаючи activation для custom folder. Інші root names не змінюються.
@@ -676,7 +700,7 @@ Updater працює лише поки plugin active. Він не самовіл
 
 Release checklist:
 
-1. однаково підняти header `Version` і `SIMPLE_REDIS_CACHE_VERSION`;
+1. однаково підняти header `Version`, `SIMPLE_REDIS_CACHE_VERSION` і release baseline у розділі 1 цього файла;
 2. оновити `Stable tag`, changelog у `readme.txt` і hard-coded changelog поточної версії у стандартному WordPress plugin-details modal;
 3. оновити POT/PO `Project-Id-Version`, скомпілювати MO та перевірити обидві локалі;
 4. за зміни requirements синхронізувати main header, readmes та hard-coded updater fields;
@@ -688,13 +712,14 @@ Tag або GitHub Release поточному updater не потрібні: но
 
 ## 16. Відомі компроміси й ризики
 
-- Загального auto purge немає: автоматично змінюються лише content tokens оновлених singular resources і/або пов'язаних public term archives, коли відповідні opt-in options увімкнені. Object cache та всі інші HTML-представлення можуть бути stale до TTL або manual purge.
+- Загального auto purge немає: автоматично змінюються лише content tokens оновлених singular resources і/або пов'язаних public term archives, коли відповідні opt-in options увімкнені. Object cache та всі інші HTML-представлення можуть бути stale до TTL або manual purge; при ненульовому `page.shared_max_age` manual purge теж не дістає до shared cache.
 - Late `DONOTCACHEPAGE`, визначений active plugin, зупиняє MISS storage, але не готовий anonymous early HIT. Для гарантованого bypass умова має бути доступна до `advanced-cache.php` або виражена path/query/cookie exclusion.
 - Anonymous HIT не завантажує WordPress, DB, plugins або theme hooks. Будь-яка personalization повинна бути врахована в exclusions/variants.
 - Anonymous output-buffer guard порівнює лише `ob_get_level()`, а не identity handlers; заміна stack зі збереженням тієї самої глибини не буде виявлена.
-- Logged-in key не містить довільні user meta; logged-in cache ризикований для session state і disabled за замовчуванням.
+- Logged-in key не містить довільні user meta; logged-in cache ризикований для session state і disabled за замовчуванням. `shared_max_age` на logged-in HIT не надсилається взагалі, а за відсутнього збереженого `Cache-Control` runtime сам додає `private, no-store`, тож per-session HTML не потрапляє в shared cache навіть на сайті, який прибрав `nocache_headers`.
 - Early cookie exclusions є name-based: stale/duplicate auth cookie після logout, `PHPSESSID` або інша configured session cookie продовжує давати BYPASS, доки browser її не прибере.
 - Vary-cookie/ignored-query misconfiguration може об'єднати різні відповіді в один key.
+- Cookie- та UA-рішення видимі лише origin: payload зберігається щонайбільше з `Vary: Accept-Encoding`, тож при ненульовому `page.shared_max_age` shared cache, що ключується за URL, може злити variants vary-cookies (типово мовні cookie WPML/Polylang) і віддати public-копію запиту, який на origin дав би BYPASS через excluded cookie або UA.
 - Request `no-cache`, `max-age=0` і `Pragma: no-cache` навмисно не змушують сервер повторно рендерити сторінку; для гарантованого request bypass використовувати `no-store` або configured exclusion.
 - Allowed `Set-Cookie` не replay-иться на HIT.
 - Page payload не має size cap і зберігається uncompressed.
@@ -706,17 +731,23 @@ Tag або GitHub Release поточному updater не потрібні: но
 - Object payload декодується native `unserialize()` з objects; Redis має бути trusted/private і не приймати сторонніх writes.
 - Кожна нова persistent group створює group-generation meta key без TTL; dynamic/unbounded group names можуть накопичувати permanent metadata.
 - Hash `page-content-versions` не має TTL і накопичує по одному field для кожного відстеженого post/term resource; global page purge видаляє весь hash, а звичайна точкова інвалідація лише змінює відповідні fields.
+- Discovery прогріву обмежене 20000 URL: на дуже великому сайті частину розділів доведеться гріти окремими запусками.
 - Ownership marker не є криптографічною ідентичністю.
 - `WP_CACHE` лишається після uninstall.
 - GitHub package — mutable archive поточної гілки `master` без pin до commit, незалежної checksum або signature.
 - Redis meta eviction створює новий random namespace і не відроджує generation `1`, але погіршує hit rate та лишає orphaned payload до TTL.
 - Зовнішня зміна `WP_CACHE_KEY_SALT` не може автоматично bump-нути невідомий old prefix; повернення старого salt до TTL може знову відкрити його namespace, якщо його не очистили до зміни.
+- Ненульовий `page.shared_max_age` віддає HTML shared cache, який плагін не вміє інвалідувати: `Cache-Control: public, max-age=0, s-maxage=N` додається лише на anonymous HIT у `serve()`, тоді як content tokens, generation bump і manual purge торкаються самого Redis. CDN продовжує віддавати стару сторінку до кінця `s-maxage`, включно з cached 404; очищення edge лишається ручною операцією оператора.
+- `shared_max_age` навмисно не входить у `$page_keys` `invalidate_changed_settings()`: зміна або обнулення значення нічого не інвалідує й не відкликає копії, які shared cache уже зберіг зі старим `s-maxage`.
+- Інвалідатор реєструє лише `post_updated` і `set_object_terms`, тому поза покриттям лишаються остаточне видалення поста, перейменування/злиття/видалення терміна, будь-яке `wp_remove_object_terms()` і публікація за розкладом через `wp_publish_post()`; їхній HTML лишається валідним до TTL чи manual page purge.
+- `wp_cache_flush()` і `wp_cache_flush_group()` за ввімкненого DB mirror видаляють усі стандартні transients із `wp_options`, включно з чужими, і робить це будь-який виклик — наприклад WP-CLI `wp cache flush` — без окремого підтвердження, якого вимагають кнопки в адмінці. Рядки зберігаються, лише коли generation bump не вдався.
 
 ## 17. Правила внесення змін
 
 - Ранні файли не повинні викликати WordPress APIs, які ще не гарантовано завантажені. Перевіряйте `function_exists`/`defined` або залишайте логіку dependency-free.
 - Не переносити secret/config читання в constants. Redis settings залишаються в admin option/generated config.
 - Не міняти key schema або payload version без migration/namespace versioning та purge plan.
+- Кожен новий `page.*`/`object.*` ключ свідомо класифікувати в `invalidate_changed_settings()`: або додати у відповідний список, або задокументувати виняток. Ключі, що змінюють лише response headers і не входять у payload (`shared_max_age`), навмисно лишаються поза `$page_keys`.
 - Не змінювати byte-for-byte поведінку `WP_CACHE_KEY_SALT` випадково.
 - Не перезаписувати й не видаляти foreign drop-ins/config.
 - Файлові заміни мають залишатися atomic, із temp у тому самому filesystem та OPcache invalidation.
@@ -734,6 +765,9 @@ Dependency-light checks запускаються напряму через PHP �
 
 - `tests/config-migration.php` — schema upgrade, preservation, no downgrade;
 - `tests/page-request.php` — cacheable path і encoded-control bypass;
+- `tests/response-safety.php` — відсутність `s-maxage` на logged-in HIT, ігнорування відкинутого output-буфера, утримання lock відкритим capture, збереження DB transients при невдалому bump, обробка несеріалізовних значень, `replace()` для mirrored non-persistent групи і per-call семантика `error()`;
+- `tests/admin-notice-routing.php` — маршрутизація повідомлень адміністратору незалежно від автора запиту та обмеження черги;
+- `tests/warmer-discovery.php` — normalized deduplication URL прогріву й наявність межі discovery;
 - `tests/page-capture-post-tracking.php` — payload association лише з enabled frontend-viewable `WP_Post`/`WP_Term`, без помилкового author/user ID;
 - `tests/page-invalidator.php` — post/term hooks, old/new/parent terms, WPML/Polylang translations і fail-open warning;
 - `tests/page-content-invalidation-integration.php` — post/term token init/bump/eviction recovery і reset під час global page bump;
@@ -751,6 +785,9 @@ find . -name '*.php' -type f -print0 | xargs -0 -n1 php -l
 node --check assets/js/admin-warm-cache.js
 php tests/config-migration.php
 php tests/page-request.php
+php tests/response-safety.php
+php tests/admin-notice-routing.php
+php tests/warmer-discovery.php
 php tests/page-capture-post-tracking.php
 php tests/page-invalidator.php
 php tests/github-updater.php
@@ -800,7 +837,10 @@ wp plugin status simple-redis-cache
 - manual page generation purge;
 - із warmed singular HIT оновлення post/page/CPT дає наступний `MISS`, потім `HIT`, і так само інвалідує знайдені WPML/Polylang translations;
 - зміна term relationships інвалідує old/new public term archives та hierarchical parents, але не unrelated archive;
-- Redis failure під час content invalidation не ламає save, ставить warning і залишає попередній HTML доступним до TTL/manual purge.
+- Redis failure під час content invalidation не ламає save, ставить warning і залишає попередній HTML доступним до TTL/manual purge;
+- із ненульовим `shared_max_age` anonymous HIT містить `Cache-Control: public, max-age=0, s-maxage=N`, а MISS, BYPASS і будь-який logged-in HIT — ні; наявний у збереженій відповіді `Cache-Control` не перезаписується, а нуль не надсилає заголовка взагалі;
+- сторінка, чий буфер відкинуто пізнім `ob_end_clean()` (maintenance mode, заміна відповіді), не потрапляє в кеш;
+- за ввімкненого DB mirror і недоступного Redis `wp_cache_flush()` не видаляє transient-рядки й повертає `false`.
 
 Для updater:
 

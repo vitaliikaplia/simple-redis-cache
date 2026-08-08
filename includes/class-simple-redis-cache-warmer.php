@@ -15,6 +15,17 @@ final class Simple_Redis_Cache_Warmer {
 	private const QUERY_BATCH_SIZE = 250;
 	private const WARM_HEADER      = 'X-Simple-Redis-Cache-Warm';
 
+	/**
+	 * Upper bound on discovered URLs.
+	 *
+	 * Pagination is emitted per estimated page for the home, every author, every
+	 * year/month/day, every post type archive and every non-empty term, so the set
+	 * can far exceed the number of posts. Without a bound a large site exhausts
+	 * memory or the execution limit before the browser receives anything. Reaching
+	 * the bound is always reported as a warning rather than silently truncating.
+	 */
+	private const MAX_DISCOVERED_URLS = 20000;
+
 	/** @return array<string, WP_Post_Type> */
 	public static function public_post_types(): array {
 		$objects = get_post_types( array( 'public' => true ), 'objects' );
@@ -64,21 +75,43 @@ final class Simple_Redis_Cache_Warmer {
 		$post_types       = array_values( array_intersect( self::clean_names( $post_types ), array_keys( $post_objects ) ) );
 		$taxonomies       = array_values( array_intersect( self::clean_names( $taxonomies ), array_keys( $taxonomy_objects ) ) );
 
-		$urls     = array();
-		$seen     = array();
-		$warnings = array();
-		$add_url  = static function ( mixed $candidate ) use ( &$urls, &$seen ): void {
-			if ( ! is_string( $candidate ) ) {
+		$urls      = array();
+		$seen      = array();
+		$warnings  = array();
+		$truncated = false;
+		$add_url   = static function ( mixed $candidate ) use ( &$urls, &$seen, &$truncated ): void {
+			if ( ! is_string( $candidate ) || $truncated ) {
 				return;
 			}
 
 			$url = Simple_Redis_Cache_Warmer::site_url( $candidate );
-			if ( '' === $url || isset( $seen[ $url ] ) ) {
+			if ( '' === $url ) {
 				return;
 			}
 
-			$seen[ $url ] = true;
+			/*
+			 * Deduplicate on a normalized key, not the raw string. WordPress hands back
+			 * the same page in different shapes: home_url('/') keeps the trailing slash
+			 * while get_post_type_archive_link('post') does not, so a posts-on-front
+			 * site would otherwise warm its home page twice.
+			 */
+			$key = Simple_Redis_Cache_Warmer::deduplication_key( $url );
+			if ( isset( $seen[ $key ] ) ) {
+				return;
+			}
+
+			if ( count( $urls ) >= Simple_Redis_Cache_Warmer::MAX_DISCOVERED_URLS ) {
+				$truncated = true;
+				return;
+			}
+
+			$seen[ $key ] = true;
 			$urls[]       = $url;
+		};
+
+		/* Producers consult this so the bound stops the queries too, not just the list. */
+		$should_stop = static function () use ( &$truncated ): bool {
+			return $truncated;
 		};
 
 		$posts_per_page = max( 1, (int) get_option( 'posts_per_page', 10 ) );
@@ -108,6 +141,10 @@ final class Simple_Redis_Cache_Warmer {
 		}
 
 		foreach ( $post_types as $post_type ) {
+			if ( $truncated ) {
+				break;
+			}
+
 			$object = $post_objects[ $post_type ];
 			if ( ! is_post_type_viewable( $object ) ) {
 				$warnings[] = sprintf(
@@ -136,7 +173,7 @@ final class Simple_Redis_Cache_Warmer {
 				continue;
 			}
 
-			$total = self::add_post_type_urls( $post_type, $needs_singular, $add_url );
+			$total = self::add_post_type_urls( $post_type, $needs_singular, $add_url, $should_stop );
 			if ( is_string( $archive_url ) ) {
 				self::add_archive_with_pagination( $archive_url, $total, $posts_per_page, $add_url );
 			}
@@ -146,6 +183,10 @@ final class Simple_Redis_Cache_Warmer {
 			$warnings[] = __( 'Taxonomy archives were skipped because archive caching is disabled.', 'simple-redis-cache' );
 		} elseif ( ! empty( $page['cache_archives'] ) ) {
 			foreach ( $taxonomies as $taxonomy ) {
+				if ( $truncated ) {
+					break;
+				}
+
 				$object = $taxonomy_objects[ $taxonomy ];
 				if ( ! is_taxonomy_viewable( $object ) ) {
 					$warnings[] = sprintf(
@@ -155,8 +196,16 @@ final class Simple_Redis_Cache_Warmer {
 					);
 					continue;
 				}
-				self::add_taxonomy_urls( $taxonomy, $posts_per_page, $add_url );
+				self::add_taxonomy_urls( $taxonomy, $posts_per_page, $add_url, $should_stop );
 			}
+		}
+
+		if ( $truncated ) {
+			$warnings[] = sprintf(
+				/* translators: %d: maximum number of URLs discovered in one run. */
+				__( 'Discovery stopped at %d URLs. Warm the remaining sections by selecting fewer sources per run.', 'simple-redis-cache' ),
+				self::MAX_DISCOVERED_URLS
+			);
 		}
 
 		return array(
@@ -164,6 +213,27 @@ final class Simple_Redis_Cache_Warmer {
 			'warnings'         => array_values( array_unique( $warnings ) ),
 			'selected_sources' => count( $system ) + count( $post_types ) + count( $taxonomies ),
 		);
+	}
+
+	/**
+	 * Normalize a discovered URL for deduplication only. The original string is what
+	 * gets warmed; this just decides whether two candidates are the same page.
+	 */
+	private static function deduplication_key( string $url ): string {
+		$parts = wp_parse_url( $url );
+		if ( ! is_array( $parts ) ) {
+			return $url;
+		}
+
+		$path = rtrim( (string) ( $parts['path'] ?? '/' ), '/' );
+		if ( '' === $path ) {
+			$path = '/';
+		}
+
+		return strtolower( (string) ( $parts['scheme'] ?? '' ) . '://' . (string) ( $parts['host'] ?? '' ) )
+			. ':' . self::effective_port( $parts )
+			. $path
+			. ( isset( $parts['query'] ) ? '?' . (string) $parts['query'] : '' );
 	}
 
 	/**
@@ -329,7 +399,7 @@ final class Simple_Redis_Cache_Warmer {
 	}
 
 	/** @param callable(string):void $add_url */
-	private static function add_post_type_urls( string $post_type, bool $add_singular, callable $add_url ): int {
+	private static function add_post_type_urls( string $post_type, bool $add_singular, callable $add_url, callable $should_stop ): int {
 		$statuses = self::public_statuses();
 		if ( 'attachment' === $post_type ) {
 			$statuses[] = 'inherit';
@@ -375,13 +445,13 @@ final class Simple_Redis_Cache_Warmer {
 
 			$max_pages = $add_singular ? max( 1, (int) $query->max_num_pages ) : 1;
 			$paged++;
-		} while ( $add_singular && $paged <= $max_pages );
+		} while ( $add_singular && $paged <= $max_pages && ! $should_stop() );
 
 		return $total;
 	}
 
 	/** @param callable(string):void $add_url */
-	private static function add_taxonomy_urls( string $taxonomy, int $posts_per_page, callable $add_url ): void {
+	private static function add_taxonomy_urls( string $taxonomy, int $posts_per_page, callable $add_url, callable $should_stop ): void {
 		$offset = 0;
 		do {
 			$terms = get_terms(
@@ -413,7 +483,7 @@ final class Simple_Redis_Cache_Warmer {
 
 			$count   = count( $terms );
 			$offset += $count;
-		} while ( self::QUERY_BATCH_SIZE === $count );
+		} while ( self::QUERY_BATCH_SIZE === $count && ! $should_stop() );
 	}
 
 	/**

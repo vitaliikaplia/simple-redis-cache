@@ -161,11 +161,21 @@ class WP_Object_Cache {
 		$runtime_found = $this->runtime_exists( $key, $group );
 
 		if ( ! $this->is_persistent_group( $group ) ) {
+			// A mirrored transient group can still prove existence from the database,
+			// and must receive the replacement there too. Otherwise replace() would
+			// contradict a get() in the same request and leave a stale database row.
+			if ( ! $runtime_found && $this->uses_db_fallback( $group ) ) {
+				$runtime_found = ! empty( $this->read_db_transient( $key, $group )['found'] );
+			}
+
 			if ( ! $runtime_found ) {
 				return false;
 			}
 
 			$this->put_runtime( $key, $group, $data, $ttl );
+			if ( $this->uses_db_fallback( $group ) ) {
+				$this->write_db_transient( $key, $group, $data, $ttl );
+			}
 			return true;
 		}
 
@@ -407,8 +417,14 @@ class WP_Object_Cache {
 			$redis_ok = $this->bump_object_generation();
 		}
 
+		/*
+		 * Deleting the database mirror while the Redis generation still points at the
+		 * old values is a partial purge: the rows are gone, but stale Redis entries
+		 * keep answering. Retain the rows instead and report failure, which is the
+		 * same rule Purger::purge() applies to the confirmed object purge.
+		 */
 		$db_ok = true;
-		if ( $this->transient_db_fallback ) {
+		if ( $redis_ok && $this->transient_db_fallback ) {
 			$db_ok = $this->clear_db_transient_group( 'transient', false );
 			$db_ok = $this->clear_db_transient_group( 'site-transient', false ) && $db_ok;
 		}
@@ -435,8 +451,9 @@ class WP_Object_Cache {
 			$redis_ok = $this->bump_group_generation( $group );
 		}
 
+		// Same rule as flush(): no database deletion behind a failed generation bump.
 		$db_ok = true;
-		if ( $this->uses_db_fallback( $group ) ) {
+		if ( $redis_ok && $this->uses_db_fallback( $group ) ) {
 			$db_ok = $this->clear_db_transient_group( $group, true );
 		}
 
@@ -744,10 +761,19 @@ class WP_Object_Cache {
 		bool $only_if_absent = false,
 		bool $only_if_present = false
 	): ?bool {
+		/*
+		 * A value that cannot be serialized will never reach Redis on any attempt, so
+		 * it must not be reported as an outage: null makes callers fail open and tell
+		 * WordPress the write succeeded. Answer the NX/XX "rejected" value instead.
+		 */
+		$payload = $this->encode( $value );
+		if ( false === $payload ) {
+			return false;
+		}
+
 		$client      = $this->client();
 		$storage_key = $this->storage_key( $key, $group );
-		$payload     = $this->encode( $value );
-		if ( null === $client || null === $storage_key || false === $payload ) {
+		if ( null === $client || null === $storage_key ) {
 			return null;
 		}
 
@@ -1047,6 +1073,15 @@ class WP_Object_Cache {
 			return false;
 		}
 
+		/*
+		 * update_option() runs maybe_serialize(), which throws on a closure or other
+		 * unserializable value. Refuse the mirror write instead of turning a cache
+		 * miss into a fatal request.
+		 */
+		if ( false === $this->encode( $value ) ) {
+			return false;
+		}
+
 		$names = $this->transient_option_names( $key, $group );
 		update_option( $names['timeout'], time() + max( 1, $ttl ), false );
 		update_option( $names['value'], $value, false );
@@ -1084,17 +1119,23 @@ class WP_Object_Cache {
 			return false;
 		}
 
+		/*
+		 * Invalidate the cached options group before deleting anything. A stale Redis
+		 * copy of that group would let get_option() resurrect exactly the transients
+		 * this call is about to remove, so a failed bump must abort the delete rather
+		 * than leave a half-cleared state that still reports success.
+		 */
+		if ( $invalidate_options ) {
+			unset( $this->cache['options'], $this->expirations['options'] );
+			if ( $this->object_enabled && ! $this->bump_group_generation( 'options' ) ) {
+				return false;
+			}
+		}
+
 		$prefix = 'site-transient' === $group ? '_site_transient_' : '_transient_';
 		$like   = method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( $prefix ) . '%' : $prefix . '%';
 		$sql    = $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $like );
 		$result = $wpdb->query( $sql );
-
-		if ( $invalidate_options ) {
-			unset( $this->cache['options'], $this->expirations['options'] );
-			if ( $this->object_enabled ) {
-				$this->bump_group_generation( 'options' );
-			}
-		}
 
 		return false !== $result;
 	}

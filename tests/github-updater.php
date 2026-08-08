@@ -119,6 +119,16 @@ $GLOBALS['src_test_update_metadata'] = array(
 	'last_checked' => time(),
 );
 
+/*
+ * A missing update transient must stay missing. Returning a fresh stdClass makes
+ * core's `false` truthy, and delete_plugins() then takes its "there is update
+ * data" branch and writes back a transient that never had a last_checked.
+ */
+$assert( false === $updater->filter_update_plugins_transient( false ), 'A missing update transient was materialized into an object.' );
+$assert( null === $updater->filter_update_plugins_transient( null ), 'A null update transient was materialized into an object.' );
+$empty_transient = (object) array();
+$assert( $empty_transient === $updater->filter_update_plugins_transient( $empty_transient ), 'An unchecked transient was modified.' );
+
 $newer_transient = (object) array(
 	'checked'   => array( SIMPLE_REDIS_CACHE_BASENAME => '0.3.0' ),
 	'no_update' => array(

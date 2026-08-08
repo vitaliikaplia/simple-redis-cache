@@ -20,6 +20,9 @@ final class Simple_Redis_Cache_Admin {
 	private const SETTINGS_TAB = '_settings_tab';
 	private const FORM_TABS    = array( 'redis', 'object', 'page' );
 
+	/** @var array<string, mixed>|null Request-local config used while rendering fields. */
+	private static ?array $render_config = null;
+
 	public static function init(): void {
 		add_action( 'admin_menu', array( self::class, 'admin_menu' ) );
 		add_action( 'admin_init', array( self::class, 'register_settings' ) );
@@ -75,6 +78,7 @@ final class Simple_Redis_Cache_Admin {
 				'nonce'         => wp_create_nonce( self::WARM_NONCE ),
 				'retryDelay'    => 250,
 				'requestTimeout' => 30000,
+				'prepareTimeout' => 120000,
 				'strings'       => array(
 					'preparing'       => __( 'Discovering public URLs…', 'simple-redis-cache' ),
 					'noSources'       => __( 'Select at least one source to warm.', 'simple-redis-cache' ),
@@ -85,6 +89,7 @@ final class Simple_Redis_Cache_Admin {
 					'partial'         => __( 'Cache warming completed with some URLs not cached.', 'simple-redis-cache' ),
 					'stopped'         => __( 'Cache warming was stopped.', 'simple-redis-cache' ),
 					'prepareFailed'   => __( 'Could not prepare cache warming.', 'simple-redis-cache' ),
+					'prepareTimedOut' => __( 'Discovering public URLs timed out. Select fewer sources and try again.', 'simple-redis-cache' ),
 					'requestFailed'   => __( 'The frontend request failed.', 'simple-redis-cache' ),
 					'requestTimedOut' => __( 'The frontend request timed out.', 'simple-redis-cache' ),
 					'missingStatus'   => __( 'The frontend response did not contain a page-cache status.', 'simple-redis-cache' ),
@@ -262,9 +267,17 @@ final class Simple_Redis_Cache_Admin {
 		<?php
 	}
 
-	/** @param array<string, mixed> $args */
+	/**
+	 * @param array<string, mixed> $args
+	 *
+	 * Config::get() reads the option straight from the database on purpose, so the
+	 * settings screen would otherwise issue one uncached query per rendered field.
+	 * Memoize per request here rather than inside Config, where the fresh read is
+	 * what lets concurrent-save detection and runtime recovery work.
+	 */
 	public static function render_field( array $args ): void {
-		$config  = Simple_Redis_Cache_Config::get();
+		self::$render_config ??= Simple_Redis_Cache_Config::get();
+		$config  = self::$render_config;
 		$group   = (string) $args['group'];
 		$key     = (string) $args['key'];
 		$type    = (string) $args['type'];
@@ -466,9 +479,20 @@ final class Simple_Redis_Cache_Admin {
 		return $links;
 	}
 
+	/**
+	 * Queue an administrator notice.
+	 *
+	 * Per-user storage is only useful when that user will actually see it. A failed
+	 * invalidation caused by an editor's save, a webhook, or cron would otherwise be
+	 * written to a queue nobody with `manage_options` ever reads. Those go to the
+	 * shared fallback instead, which every administrator drains on their next visit.
+	 */
 	public static function queue_notice( string $message, string $type = 'info' ): void {
 		$type    = in_array( $type, array( 'success', 'warning', 'error', 'info' ), true ) ? $type : 'info';
 		$user_id = get_current_user_id();
+		if ( $user_id > 0 && function_exists( 'current_user_can' ) && ! current_user_can( 'manage_options' ) ) {
+			$user_id = 0;
+		}
 		$notices = self::read_queued_notices( $user_id );
 		$notices[] = array( 'message' => $message, 'type' => $type );
 		$notices = array_slice( $notices, -10 );
@@ -489,6 +513,14 @@ final class Simple_Redis_Cache_Admin {
 		$notices = self::read_queued_notices( $user_id );
 		if ( $user_id > 0 ) {
 			delete_user_meta( $user_id, self::NOTICE_KEY );
+
+			// Also drain the shared fallback, which holds notices produced by requests
+			// that had no administrator to attribute them to.
+			$shared = self::read_queued_notices( 0 );
+			if ( ! empty( $shared ) ) {
+				delete_option( self::NOTICE_KEY );
+				$notices = array_slice( array_merge( $shared, $notices ), -10 );
+			}
 		} else {
 			delete_option( self::NOTICE_KEY );
 		}

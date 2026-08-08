@@ -18,6 +18,11 @@ final class Simple_Redis_Cache_Page_Request {
 		'customize_theme',
 		'customize_messenger_channel',
 		'rest_route',
+		// Comment-moderation links from wp-comments-post.php render a pending comment
+		// for the author. Core only limits that view for ten minutes at render time,
+		// so caching it would expose the pending comment for the whole page TTL.
+		'unapproved',
+		'moderation-hash',
 		'wc-ajax',
 		'add-to-cart',
 		'remove_item',
@@ -388,7 +393,15 @@ final class Simple_Redis_Cache_Page_Request {
 		return false;
 	}
 
-	/** @param string[] $patterns */
+	/**
+	 * Match a request path against the configured exclusions.
+	 *
+	 * Matching is case-insensitive. An administrator writing /My-Account/* means the
+	 * same page as /my-account/, and a silently ineffective exclusion is far worse
+	 * than an extra bypass. This also matches how ignored query parameters behave.
+	 *
+	 * @param string[] $patterns
+	 */
 	private static function matches_path_list( string $path, array $patterns ): bool {
 		foreach ( $patterns as $pattern ) {
 			$pattern = trim( (string) $pattern );
@@ -400,11 +413,11 @@ final class Simple_Redis_Cache_Page_Request {
 				$pattern = '/' . $pattern;
 			}
 
-			if ( str_ends_with( $pattern, '/*' ) && rtrim( $path, '/' ) === substr( $pattern, 0, -2 ) ) {
+			if ( str_ends_with( $pattern, '/*' ) && 0 === strcasecmp( rtrim( $path, '/' ), substr( $pattern, 0, -2 ) ) ) {
 				return true;
 			}
 
-			if ( self::pattern_matches( $path, $pattern, false, false ) ) {
+			if ( self::pattern_matches( $path, $pattern, true, false ) ) {
 				return true;
 			}
 		}
@@ -449,10 +462,19 @@ final class Simple_Redis_Cache_Page_Request {
 				return null;
 			}
 
+			/*
+			 * Compare the name WordPress will actually receive, not the raw one. PHP
+			 * rewrites query-parameter names before they reach $_GET, so "rest.route"
+			 * arrives as "rest_route" and ".wpnonce" as "_wpnonce". Matching the raw
+			 * form would let most of the unsafe list slip through and cache, say, a
+			 * REST response or a page rendering a pending comment.
+			 */
+			$php_name   = self::php_variable_name( $name );
 			$lower_name = strtolower( $name );
 			$bracket    = strpos( $lower_name, '[' );
 			$base_name  = false === $bracket ? $lower_name : substr( $lower_name, 0, $bracket );
 			if (
+				in_array( $php_name, self::UNSAFE_QUERY_PARAMETERS, true ) ||
 				in_array( $lower_name, self::UNSAFE_QUERY_PARAMETERS, true ) ||
 				in_array( $base_name, self::UNSAFE_QUERY_PARAMETERS, true )
 			) {
@@ -461,7 +483,7 @@ final class Simple_Redis_Cache_Page_Request {
 
 			$ignored = false;
 			foreach ( $ignored_patterns as $ignored_pattern ) {
-				if ( self::pattern_matches( $name, (string) $ignored_pattern, true, false ) ) {
+				if ( self::pattern_matches( $php_name, (string) $ignored_pattern, true, false ) ) {
 					$ignored = true;
 					break;
 				}
@@ -471,7 +493,7 @@ final class Simple_Redis_Cache_Page_Request {
 			}
 
 			$pairs[] = array( $name, $value );
-			$names[] = $lower_name;
+			$names[] = $php_name;
 		}
 
 		/*
@@ -488,6 +510,26 @@ final class Simple_Redis_Cache_Page_Request {
 		sort( $names, SORT_STRING );
 
 		return array( 'query' => implode( '&', $encoded ), 'names' => $names );
+	}
+
+	/**
+	 * Reproduce the query-parameter name WordPress will actually see.
+	 *
+	 * PHP's php_register_variable_ex() drops leading spaces, then rewrites every
+	 * space, dot and "[" to an underscore — except that a "[" which is actually
+	 * closed later starts an array, in which case the name is truncated there.
+	 * So "a[b]" becomes "a", but the unterminated "a[b" becomes "a_b". Any check
+	 * that reasons about what WordPress will do with a parameter has to reason
+	 * about this name, not the one on the wire.
+	 */
+	private static function php_variable_name( string $name ): string {
+		$name    = ltrim( $name, ' ' );
+		$bracket = strpos( $name, '[' );
+		if ( false !== $bracket && false !== strpos( $name, ']', $bracket ) ) {
+			$name = substr( $name, 0, $bracket );
+		}
+
+		return strtolower( strtr( $name, ' .[', '___' ) );
 	}
 
 	private static function pattern_matches( string $value, string $pattern, bool $case_insensitive, bool $substring_without_wildcard ): bool {

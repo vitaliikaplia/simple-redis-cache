@@ -39,9 +39,17 @@ function get_post_type( int $post_id ): string|false {
 }
 
 function get_taxonomy( string $taxonomy ): object|false {
-	return '' !== $taxonomy
-		? (object) array( 'name' => $taxonomy, 'publicly_queryable' => 'internal' !== $taxonomy )
-		: false;
+	if ( '' === $taxonomy ) {
+		return false;
+	}
+
+	// "profile" stands for a public taxonomy registered against something other than
+	// a post type, which set_object_terms also fires for.
+	return (object) array(
+		'name'               => $taxonomy,
+		'publicly_queryable' => 'internal' !== $taxonomy,
+		'object_type'        => 'profile' === $taxonomy ? array( 'user' ) : array( 'post', 'page' ),
+	);
 }
 
 function is_taxonomy_viewable( object $taxonomy ): bool {
@@ -196,6 +204,17 @@ sort( $terms, SORT_NUMERIC );
 $assert( array( 1, 2, 3 ) === $posts, 'The updated post and all WPML/Polylang translations were not invalidated together.' );
 $assert( array( 100, 111, 112, 121, 131, 211 ) === $terms, 'Old, new, translated, custom-taxonomy, and hierarchical parent archives were not invalidated together.' );
 $assert( ! in_array( 911, $terms, true ), 'A non-viewable taxonomy archive was invalidated.' );
+
+// set_object_terms fires for every object type and its IDs are unique only within
+// a taxonomy, so a public taxonomy attached to users must never be mistaken for a
+// post relationship just because the object ID matches an existing post.
+Simple_Redis_Cache_Redis::$invalidated = array();
+Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 501 ), 'profile', false, array( 500 ) );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert(
+	empty( Simple_Redis_Cache_Redis::$invalidated['term'] ) && empty( Simple_Redis_Cache_Redis::$invalidated['post'] ),
+	'A taxonomy that does not apply to the post type invalidated the post and its terms.'
+);
 
 $GLOBALS['src_test_config']['page']['invalidate_on_post_update'] = false;
 Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $post, $post );
