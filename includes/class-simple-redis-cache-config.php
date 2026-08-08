@@ -102,6 +102,7 @@ final class Simple_Redis_Cache_Config {
 		$redis_input = is_array( $input['redis'] ?? null ) ? $input['redis'] : array();
 		$object_input = is_array( $input['object'] ?? null ) ? $input['object'] : array();
 		$page_input = is_array( $input['page'] ?? null ) ? $input['page'] : array();
+		$cloudflare_input = is_array( $input['cloudflare'] ?? null ) ? $input['cloudflare'] : array();
 
 		$scheme = (string) ( $redis_input['scheme'] ?? 'tcp' );
 		if ( ! in_array( $scheme, array( 'tcp', 'tls', 'unix' ), true ) ) {
@@ -161,6 +162,34 @@ final class Simple_Redis_Cache_Config {
 			'allowed_set_cookies'       => self::lines( $page_input['allowed_set_cookies'] ?? '' ),
 			'debug_header'             => ! empty( $page_input['debug_header'] ),
 			'lock_ttl'                 => 10,
+		);
+
+		/*
+		 * The API token is a credential, so it follows the same retain/replace/clear
+		 * contract as the Redis password: a blank field with "keep" checked preserves
+		 * the stored value, unchecked clears it, and a non-empty field replaces it.
+		 */
+		$api_token = array_key_exists( 'api_token', $cloudflare_input )
+			? (string) $cloudflare_input['api_token']
+			: (string) ( $old['cloudflare']['api_token'] ?? '' );
+		/*
+		 * Strip whitespace before deciding whether the field was left blank. A stray
+		 * space would otherwise read as "the admin typed something", defeat the keep
+		 * checkbox and wipe the token — which Cloudflare only ever shows once.
+		 */
+		$api_token = (string) preg_replace( '/\s+/', '', $api_token );
+		if ( '' === $api_token && ! empty( $cloudflare_input['keep_api_token'] ) ) {
+			$api_token = (string) preg_replace( '/\s+/', '', (string) ( $old['cloudflare']['api_token'] ?? '' ) );
+		}
+
+		$config['cloudflare'] = array(
+			// A Cloudflare zone ID is a 32-character hex string; anything else would
+			// only ever produce a 404 from the API, so it is not worth storing.
+			'zone_id'              => (string) preg_replace( '/[^a-f0-9]/', '', strtolower( trim( (string) ( $cloudflare_input['zone_id'] ?? '' ) ) ) ),
+			'api_token'            => $api_token,
+			'purge_on_clear_all'   => ! empty( $cloudflare_input['purge_on_clear_all'] ),
+			'purge_on_clear_page'  => ! empty( $cloudflare_input['purge_on_clear_page'] ),
+			'purge_on_post_update' => ! empty( $cloudflare_input['purge_on_post_update'] ),
 		);
 
 		$home_url    = home_url( '/' );

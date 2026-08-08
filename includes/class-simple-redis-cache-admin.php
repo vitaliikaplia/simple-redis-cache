@@ -13,12 +13,14 @@ final class Simple_Redis_Cache_Admin {
 	private const PURGE_ACTION = 'simple_redis_cache_purge';
 	private const PURGE_CONFIRM_ACTION = 'confirm_purge';
 	private const TEST_ACTION  = 'simple_redis_cache_test_redis';
+	private const CLOUDFLARE_TEST_ACTION  = 'simple_redis_cache_test_cloudflare';
+	private const CLOUDFLARE_PURGE_ACTION = 'simple_redis_cache_purge_cloudflare';
 	private const WARM_PREPARE_ACTION = 'simple_redis_cache_prepare_warm';
 	private const WARM_URL_ACTION     = 'simple_redis_cache_warm_url';
 	private const WARM_NONCE          = 'simple_redis_cache_warm';
 	private const DEFAULT_TAB  = 'redis';
 	private const SETTINGS_TAB = '_settings_tab';
-	private const FORM_TABS    = array( 'redis', 'object', 'page' );
+	private const FORM_TABS    = array( 'redis', 'object', 'page', 'cloudflare' );
 
 	/** @var array<string, mixed>|null Request-local config used while rendering fields. */
 	private static ?array $render_config = null;
@@ -30,6 +32,8 @@ final class Simple_Redis_Cache_Admin {
 		add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		add_action( 'admin_post_' . self::TEST_ACTION, array( self::class, 'handle_test' ) );
 		add_action( 'admin_post_' . self::PURGE_ACTION, array( self::class, 'handle_purge' ) );
+		add_action( 'admin_post_' . self::CLOUDFLARE_TEST_ACTION, array( self::class, 'handle_cloudflare_test' ) );
+		add_action( 'admin_post_' . self::CLOUDFLARE_PURGE_ACTION, array( self::class, 'handle_cloudflare_purge' ) );
 		add_action( 'wp_ajax_' . self::WARM_PREPARE_ACTION, array( self::class, 'ajax_prepare_warm' ) );
 		add_action( 'wp_ajax_' . self::WARM_URL_ACTION, array( self::class, 'ajax_warm_url' ) );
 		add_action( 'admin_bar_menu', array( self::class, 'admin_bar' ), 100 );
@@ -183,6 +187,23 @@ final class Simple_Redis_Cache_Admin {
 		self::add_field( 'page', 'vary_cookies', __( 'Cookies that vary the cache key', 'simple-redis-cache' ), 'textarea', array(), __( 'One cookie name per line. Useful for language cookies that safely select a page variant.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'allowed_set_cookies', __( 'Allowed response Set-Cookie names', 'simple-redis-cache' ), 'textarea', array(), __( 'Responses setting only these cookie names may be stored; Set-Cookie headers are never replayed from cache.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'debug_header', __( 'Debug response header', 'simple-redis-cache' ), 'checkbox', array(), __( 'Send X-Simple-Redis-Cache with HIT, MISS or BYPASS status.', 'simple-redis-cache' ) );
+
+		add_settings_section(
+			'src_cloudflare',
+			__( 'Cloudflare cache', 'simple-redis-cache' ),
+			static function (): void {
+				echo '<p>' . esc_html__( 'Clears the Cloudflare edge cache alongside this site\'s own caches. Clearing the origin without clearing the edge leaves visitors on the previous page until the CDN lifetime expires.', 'simple-redis-cache' ) . '</p>';
+				echo '<p>' . esc_html__( 'Create a scoped API token in Cloudflare with the Zone / Cache Purge permission limited to this zone. An account-wide Global API Key is not used and is not required.', 'simple-redis-cache' ) . '</p>';
+			},
+			self::section_page( 'cloudflare' )
+		);
+
+		self::add_field( 'cloudflare', 'zone_id', __( 'Zone ID', 'simple-redis-cache' ), 'text', array(), __( 'The 32-character zone ID from the Cloudflare dashboard overview page.', 'simple-redis-cache' ) );
+		self::add_field( 'cloudflare', 'api_token', __( 'API token', 'simple-redis-cache' ), 'password', array(), __( 'Leave blank to retain the stored token when the option below is checked.', 'simple-redis-cache' ) );
+		self::add_field( 'cloudflare', 'keep_api_token', __( 'Stored API token', 'simple-redis-cache' ), 'keep_api_token' );
+		self::add_field( 'cloudflare', 'purge_on_clear_all', __( 'Clear Cloudflare with Clear all cache', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the whole Cloudflare zone whenever the Clear all cache action runs.', 'simple-redis-cache' ) );
+		self::add_field( 'cloudflare', 'purge_on_clear_page', __( 'Clear Cloudflare with Clear page cache', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the whole Cloudflare zone whenever the Clear page cache action runs.', 'simple-redis-cache' ) );
+		self::add_field( 'cloudflare', 'purge_on_post_update', __( 'Clear Cloudflare when content is updated', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the exact URLs this plugin already invalidates on the HTML Page Cache tab, so it requires those options to be enabled. Only the updated entries and the first page of related term archives are purged; deeper pagination and generic views are not, because Cloudflare purges exact URLs.', 'simple-redis-cache' ) );
 	}
 
 	/**
@@ -262,6 +283,9 @@ final class Simple_Redis_Cache_Admin {
 					submit_button();
 					?>
 				</form>
+				<?php if ( 'cloudflare' === $tab ) : ?>
+					<?php self::render_cloudflare_actions(); ?>
+				<?php endif; ?>
 			<?php endif; ?>
 		</div>
 		<?php
@@ -289,6 +313,13 @@ final class Simple_Redis_Cache_Admin {
 		if ( 'checkbox' === $type ) {
 			echo '<input type="hidden" name="' . esc_attr( $name ) . '" value="0">';
 			echo '<label><input id="' . esc_attr( $id ) . '" type="checkbox" name="' . esc_attr( $name ) . '" value="1" ' . checked( ! empty( $value ), true, false ) . '> ' . esc_html__( 'Enabled', 'simple-redis-cache' ) . '</label>';
+		} elseif ( 'keep_api_token' === $type ) {
+			$name = Simple_Redis_Cache_Config::OPTION . '[cloudflare][keep_api_token]';
+			echo '<input type="hidden" name="' . esc_attr( $name ) . '" value="0">';
+			echo '<label><input id="' . esc_attr( $id ) . '" type="checkbox" name="' . esc_attr( $name ) . '" value="1" checked> ' . esc_html__( 'Keep the currently stored API token when the token field is blank', 'simple-redis-cache' ) . '</label>';
+			if ( '' !== (string) ( $config['cloudflare']['api_token'] ?? '' ) ) {
+				echo '<p class="description">' . esc_html__( 'An API token is currently stored.', 'simple-redis-cache' ) . '</p>';
+			}
 		} elseif ( 'keep_password' === $type ) {
 			$name = Simple_Redis_Cache_Config::OPTION . '[redis][keep_password]';
 			echo '<input type="hidden" name="' . esc_attr( $name ) . '" value="0">';
@@ -316,7 +347,7 @@ final class Simple_Redis_Cache_Admin {
 			echo '<input class="regular-text" id="' . esc_attr( $id ) . '" type="' . esc_attr( $type ) . '" name="' . esc_attr( $name ) . '" value="' . esc_attr( $input_value ) . '"' . $attributes . ( 'password' === $type ? ' autocomplete="new-password"' : '' ) . '>';
 		}
 
-		if ( ! empty( $args['description'] ) && 'keep_password' !== $type ) {
+		if ( ! empty( $args['description'] ) && ! in_array( $type, array( 'keep_password', 'keep_api_token' ), true ) ) {
 			echo '<p class="description">' . esc_html( (string) $args['description'] ) . '</p>';
 		}
 	}
@@ -621,6 +652,101 @@ final class Simple_Redis_Cache_Admin {
 			<a class="button" href="<?php echo esc_url( self::purge_url( 'object' ) ); ?>"><?php esc_html_e( 'Clear object cache', 'simple-redis-cache' ); ?></a>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Connection test and manual purge for Cloudflare.
+	 *
+	 * Rendered after the settings form rather than inside it: these are separate
+	 * POSTs, and a form cannot be nested in another form.
+	 */
+	private static function render_cloudflare_actions(): void {
+		$config     = Simple_Redis_Cache_Config::get();
+		$configured = Simple_Redis_Cache_Cloudflare::is_configured( $config );
+		?>
+		<h2><?php esc_html_e( 'Cloudflare status and manual purge', 'simple-redis-cache' ); ?></h2>
+		<table class="widefat striped" style="max-width:900px"><tbody>
+			<tr>
+				<th scope="row"><?php esc_html_e( 'Credentials', 'simple-redis-cache' ); ?></th>
+				<td>
+					<?php echo $configured
+						? esc_html__( 'A zone ID and API token are saved. Use Test Cloudflare connection to confirm they can purge this zone.', 'simple-redis-cache' )
+						: esc_html__( 'Not configured. Save a zone ID and API token first.', 'simple-redis-cache' ); ?>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><?php esc_html_e( 'Zone ID', 'simple-redis-cache' ); ?></th>
+				<td><code><?php echo esc_html( (string) ( $config['cloudflare']['zone_id'] ?? '' ) ?: __( 'not set', 'simple-redis-cache' ) ); ?></code></td>
+			</tr>
+		</tbody></table>
+
+		<div class="notice notice-warning inline"><p><?php esc_html_e( 'Testing the connection performs a real purge of the home page URL, because that is the only way to prove the token really holds the Cache Purge permission. The single side effect is that the home page is fetched from the origin once more.', 'simple-redis-cache' ); ?></p></div>
+
+		<div style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap">
+			<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+				<input type="hidden" name="action" value="<?php echo esc_attr( self::CLOUDFLARE_TEST_ACTION ); ?>">
+				<?php wp_nonce_field( self::CLOUDFLARE_TEST_ACTION ); ?>
+				<?php submit_button( __( 'Test Cloudflare connection', 'simple-redis-cache' ), 'secondary', 'submit', false, $configured ? array() : array( 'disabled' => 'disabled' ) ); ?>
+			</form>
+			<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+				<input type="hidden" name="action" value="<?php echo esc_attr( self::CLOUDFLARE_PURGE_ACTION ); ?>">
+				<?php wp_nonce_field( self::CLOUDFLARE_PURGE_ACTION ); ?>
+				<?php submit_button( __( 'Clear Cloudflare cache', 'simple-redis-cache' ), 'secondary', 'submit', false, $configured ? array() : array( 'disabled' => 'disabled' ) ); ?>
+			</form>
+		</div>
+		<p class="description"><?php esc_html_e( 'Clear Cloudflare cache purges the entire zone and does not touch this site\'s Redis caches.', 'simple-redis-cache' ); ?></p>
+		<?php
+	}
+
+	public static function handle_cloudflare_test(): void {
+		self::authorize( self::CLOUDFLARE_TEST_ACTION );
+
+		$result = Simple_Redis_Cache_Cloudflare::verify();
+		if ( is_wp_error( $result ) ) {
+			self::queue_notice(
+				sprintf(
+					/* translators: %s: Cloudflare API error. */
+					__( 'Cloudflare check failed: %s', 'simple-redis-cache' ),
+					implode( ' ', $result->get_error_messages() )
+				),
+				'error'
+			);
+		} else {
+			$zone = (string) $result['zone'];
+			self::queue_notice(
+				'' !== $zone
+					? sprintf(
+						/* translators: 1: Cloudflare zone name, 2: zone status. */
+						__( 'Cloudflare connection verified for zone %1$s (%2$s). The token can purge this zone.', 'simple-redis-cache' ),
+						$zone,
+						(string) $result['status']
+					)
+					: __( 'Cloudflare connection verified. The token can purge this zone.', 'simple-redis-cache' ),
+				'success'
+			);
+		}
+
+		self::redirect_back();
+	}
+
+	public static function handle_cloudflare_purge(): void {
+		self::authorize( self::CLOUDFLARE_PURGE_ACTION );
+
+		$result = Simple_Redis_Cache_Cloudflare::purge_everything();
+		if ( is_wp_error( $result ) ) {
+			self::queue_notice(
+				sprintf(
+					/* translators: %s: Cloudflare API error. */
+					__( 'Could not clear the Cloudflare cache: %s', 'simple-redis-cache' ),
+					implode( ' ', $result->get_error_messages() )
+				),
+				'error'
+			);
+		} else {
+			self::queue_notice( __( 'The Cloudflare cache was cleared for this zone.', 'simple-redis-cache' ), 'success' );
+		}
+
+		self::redirect_back();
 	}
 
 	private static function render_purge_confirmation( string $scope ): void {
@@ -992,6 +1118,7 @@ final class Simple_Redis_Cache_Admin {
 			'redis'  => __( 'Redis connection', 'simple-redis-cache' ),
 			'object' => __( 'Object cache', 'simple-redis-cache' ),
 			'page'   => __( 'HTML page cache', 'simple-redis-cache' ),
+			'cloudflare' => __( 'Cloudflare cache', 'simple-redis-cache' ),
 			'warm'   => __( 'Cache warming', 'simple-redis-cache' ),
 			'status' => __( 'Status', 'simple-redis-cache' ),
 		);

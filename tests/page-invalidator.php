@@ -89,8 +89,23 @@ function wp_get_object_terms( int $post_id, string|array $taxonomy, array $args 
 	return $map[ $post_id ][ $taxonomy ] ?? array();
 }
 
+final class WP_Error {
+	/** @var string[] */
+	private array $messages;
+
+	public function __construct( string $code = '', string $message = '' ) {
+		unset( $code );
+		$this->messages = '' === $message ? array() : array( $message );
+	}
+
+	/** @return string[] */
+	public function get_error_messages(): array {
+		return $this->messages;
+	}
+}
+
 function is_wp_error( mixed $value ): bool {
-	return false;
+	return $value instanceof WP_Error;
 }
 
 function get_ancestors( int $object_id, string $object_type = '', string $resource_type = '' ): array {
@@ -106,9 +121,11 @@ function get_term( int $term_id, string $taxonomy = '' ): object|false {
 }
 
 function get_term_by( string $field, int|string $value, string $taxonomy = '' ): object|false {
-	if ( 'term_taxonomy_id' !== $field || (int) $value < 1 || '' === $taxonomy ) {
+	// WordPress allows a term_taxonomy_id lookup without naming the taxonomy.
+	if ( 'term_taxonomy_id' !== $field || (int) $value < 1 ) {
 		return false;
 	}
+	$taxonomy = '' !== $taxonomy ? $taxonomy : 'category';
 	$term_ids = array( 111 => 11, 112 => 14 );
 	return (object) array(
 		'term_id'          => $term_ids[ (int) $value ] ?? (int) $value,
@@ -178,6 +195,66 @@ final class Simple_Redis_Cache_Admin {
 	}
 }
 
+final class Simple_Redis_Cache_Cloudflare {
+	/** @var string[]|null Last URL set handed to the edge, or null when never called. */
+	public static ?array $purged = null;
+	public static bool $fail = false;
+
+	/** @param array<string, mixed>|null $config */
+	public static function should_purge_for( string $trigger, ?array $config = null ): bool {
+		$config = $config ?? Simple_Redis_Cache_Config::get();
+		return ! empty( $config['cloudflare'][ $trigger ] );
+	}
+
+	/** @param string[] $urls */
+	public static function purge_urls( array $urls, ?array $config = null ): array|WP_Error {
+		self::$purged = $urls;
+		return self::$fail
+			? new WP_Error( 'src_cloudflare_api_error', 'Cloudflare rejected the request.' )
+			: array( 'purged' => count( $urls ), 'skipped' => 0 );
+	}
+}
+
+$GLOBALS['src_test_post_status'] = 'publish';
+
+function get_post( mixed $post ): object|false {
+	if ( is_object( $post ) ) {
+		return $post;
+	}
+	$post_id = (int) $post;
+	return $post_id > 0
+		? (object) array( 'ID' => $post_id, 'post_status' => $GLOBALS['src_test_post_status'], 'post_type' => 'post' )
+		: false;
+}
+
+function get_post_status_object( string $status ): object|false {
+	$viewable = array( 'publish', 'private' );
+	return '' === $status ? false : (object) array( 'name' => $status, 'viewable' => in_array( $status, $viewable, true ) );
+}
+
+function is_post_status_viewable( object $status ): bool {
+	return ! empty( $status->viewable );
+}
+
+/** Mirrors core: a non-viewable status falls back to the plain ?p=ID permalink. */
+function get_permalink( mixed $post ): string {
+	$post = get_post( $post );
+	if ( ! is_object( $post ) ) {
+		return '';
+	}
+
+	$status = get_post_status_object( (string) $post->post_status );
+	if ( ! is_object( $status ) || ! is_post_status_viewable( $status ) ) {
+		return 'https://example.test/?p=' . (int) $post->ID;
+	}
+
+	return 'https://example.test/post-' . (int) $post->ID . '/';
+}
+
+function get_term_link( object $term ): string {
+	return 'https://example.test/term-' . $term->term_taxonomy_id . '/';
+}
+
 require_once dirname( __DIR__ ) . '/includes/class-simple-redis-cache-page-invalidator.php';
 
 $assert = static function ( bool $condition, string $message ): void {
@@ -230,6 +307,93 @@ $assert( ! empty( Simple_Redis_Cache_Redis::$invalidated['post'] ), 'The singula
 $assert( ! isset( Simple_Redis_Cache_Redis::$invalidated['term'] ), 'The disabled taxonomy-archive option still invalidated terms.' );
 
 $GLOBALS['src_test_config']['page']['invalidate_term_archives_on_post_update'] = true;
+
+// Cloudflare purging is opt-in and mirrors exactly what the Redis side invalidated.
+Simple_Redis_Cache_Redis::$invalidated  = array();
+Simple_Redis_Cache_Cloudflare::$purged  = null;
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $post, $post );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( null === Simple_Redis_Cache_Cloudflare::$purged, 'Cloudflare was purged while the option was disabled.' );
+
+$GLOBALS['src_test_config']['cloudflare'] = array( 'purge_on_post_update' => true );
+Simple_Redis_Cache_Redis::$invalidated = array();
+Simple_Redis_Cache_Cloudflare::$purged = null;
+Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 112 ), 'category', false, array( 111 ) );
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $post, $post );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$purged_urls = Simple_Redis_Cache_Cloudflare::$purged ?? array();
+sort( $purged_urls, SORT_STRING );
+$assert( in_array( 'https://example.test/post-1/', $purged_urls, true ), 'The updated post URL was not purged from Cloudflare.' );
+$assert( in_array( 'https://example.test/term-112/', $purged_urls, true ), 'A new term archive URL was not purged from Cloudflare.' );
+$assert( in_array( 'https://example.test/term-111/', $purged_urls, true ), 'The previous term archive URL was not purged from Cloudflare.' );
+$assert( in_array( 'https://example.test/post-2/', $purged_urls, true ), 'A translated post URL was not purged from Cloudflare.' );
+
+// Unpublishing is the case the edge cares about most: at shutdown the post no
+// longer resolves to the address the CDN holds, so the pre-update permalink must
+// have been captured while the old status was still in place.
+Simple_Redis_Cache_Redis::$invalidated = array();
+Simple_Redis_Cache_Cloudflare::$purged = null;
+$published = (object) array( 'ID' => 1, 'post_type' => 'post', 'post_status' => 'publish' );
+$drafted   = (object) array( 'ID' => 1, 'post_type' => 'post', 'post_status' => 'draft' );
+$GLOBALS['src_test_post_status'] = 'draft';
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $drafted, $published );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$unpublished_urls = Simple_Redis_Cache_Cloudflare::$purged ?? array();
+$assert( in_array( 'https://example.test/post-1/', $unpublished_urls, true ), 'Unpublishing did not purge the address the CDN was actually holding.' );
+$assert( ! in_array( 'https://example.test/?p=1', $unpublished_urls, true ), 'Unpublishing purged the plain ?p=ID address, which no visitor ever requested.' );
+
+// A post that was never public has no address on the edge. Its term archives are
+// still real public pages, so those may be purged — but the draft's own plain
+// ?p=ID address must never be, since no visitor ever requested it.
+Simple_Redis_Cache_Redis::$invalidated = array();
+Simple_Redis_Cache_Cloudflare::$purged = null;
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $drafted, $drafted );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$draft_urls = Simple_Redis_Cache_Cloudflare::$purged ?? array();
+foreach ( $draft_urls as $draft_url ) {
+	$assert( ! str_contains( $draft_url, '?p=' ), 'Saving a draft purged the plain ?p=ID address: ' . $draft_url );
+}
+$assert( ! in_array( 'https://example.test/post-1/', $draft_urls, true ), 'Saving a draft purged a published address the post no longer has.' );
+
+$GLOBALS['src_test_post_status'] = 'publish';
+
+// With only taxonomy invalidation enabled, the pre-update post address is not
+// something this flush invalidated, so it must not consume the URL budget.
+$GLOBALS['src_test_config']['page']['invalidate_on_post_update'] = false;
+Simple_Redis_Cache_Redis::$invalidated = array();
+Simple_Redis_Cache_Cloudflare::$purged = null;
+Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 112 ), 'category', false, array( 111 ) );
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $published, $published );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$terms_only = Simple_Redis_Cache_Cloudflare::$purged ?? array();
+$assert( ! empty( $terms_only ), 'Taxonomy-only invalidation stopped purging term archives from Cloudflare.' );
+$assert( ! in_array( 'https://example.test/post-1/', $terms_only, true ), 'A captured post address was purged although singular invalidation was disabled.' );
+$GLOBALS['src_test_config']['page']['invalidate_on_post_update'] = true;
+
+// A failed Redis bump must not trigger an edge purge: the origin would only serve
+// the same stale page straight back into the CDN for a fresh lifetime.
+Simple_Redis_Cache_Redis::$fail        = true;
+Simple_Redis_Cache_Cloudflare::$purged = null;
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $post, $post );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( null === Simple_Redis_Cache_Cloudflare::$purged, 'Cloudflare was purged even though the Redis invalidation had failed.' );
+Simple_Redis_Cache_Redis::$fail    = false;
+Simple_Redis_Cache_Admin::$notices = array();
+
+// A Cloudflare failure is fail-open: the save still succeeds and a warning is queued.
+Simple_Redis_Cache_Admin::$notices      = array();
+Simple_Redis_Cache_Cloudflare::$fail    = true;
+Simple_Redis_Cache_Redis::$invalidated  = array();
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $post, $post );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( 1 === count( Simple_Redis_Cache_Admin::$notices ), 'A Cloudflare purge failure did not queue exactly one warning.' );
+$assert( 'warning' === Simple_Redis_Cache_Admin::$notices[0]['type'], 'A Cloudflare purge failure queued the wrong notice type.' );
+$assert( ! empty( Simple_Redis_Cache_Redis::$invalidated['post'] ), 'A Cloudflare failure suppressed the Redis invalidation.' );
+
+Simple_Redis_Cache_Cloudflare::$fail = false;
+unset( $GLOBALS['src_test_config']['cloudflare'] );
+Simple_Redis_Cache_Admin::$notices = array();
+
 Simple_Redis_Cache_Redis::$fail = true;
 Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $post, $post );
 Simple_Redis_Cache_Page_Invalidator::flush();

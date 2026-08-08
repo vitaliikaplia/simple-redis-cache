@@ -100,7 +100,7 @@ final class Simple_Redis_Cache_GitHub_Updater {
 			'download_link' => $remote_data['package'] ?? $this->get_package_url(),
 			'sections'      => array(
 				'description' => '<p>' . esc_html__( 'Redis-only persistent object caching and full-page HTML caching for a single-site WordPress installation.', 'simple-redis-cache' ) . '</p>',
-				'changelog'   => '<p>' . esc_html__( 'Version 0.5.0 is a correctness release: logged-in hits are never offered to a shared cache, discarded output buffers and comment-moderation links are no longer stored, path exclusions match case-insensitively, database transient mirrors survive a failed Redis invalidation, and invalidation warnings now reach an administrator.', 'simple-redis-cache' ) . '</p>',
+				'changelog'   => '<p>' . esc_html__( 'Version 0.6.0 adds a Cloudflare Cache tab: a scoped API token, a manual zone purge, a connection test that proves the Cache Purge permission with a real purge, and optional automatic purging with Clear all cache, with Clear page cache, and when content is updated.', 'simple-redis-cache' ) . '</p>',
 			),
 		);
 	}

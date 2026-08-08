@@ -3,7 +3,7 @@ Contributors: vitaliikaplia
 Tags: redis, object cache, page cache, performance
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.5.0
+Stable tag: 0.6.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -16,11 +16,11 @@ Simple Redis Cache supports single-site WordPress installations only; activation
 * A persistent WordPress object cache via `wp-content/object-cache.php`.
 * An early full-page HTML cache via `wp-content/advanced-cache.php`.
 
-There is no file-based cache, CDN integration, minification, or scheduled/background preload. The one CDN-related feature is an optional Cache-Control lifetime added to page-cache hits; the plugin never calls a CDN API and never purges one. Independent targeted invalidation settings can expire the updated post, page, or public custom post type, its WPML/Polylang translations, and the public taxonomy term archives related to those posts without clearing unrelated page-cache entries.
+There is no file-based cache, minification, or scheduled/background preload. CDN support is limited to two things: an optional Cache-Control lifetime added to page-cache hits, and optional Cloudflare cache purging through a scoped API token. No other CDN provider is supported, and the Cloudflare client only reads the configured zone and purges it. Independent targeted invalidation settings can expire the updated post, page, or public custom post type, its WPML/Polylang translations, and the public taxonomy term archives related to those posts without clearing unrelated page-cache entries.
 
 Connection settings are configured in the WordPress admin. A non-empty `WP_CACHE_KEY_SALT`, when defined in `wp-config.php`, is preserved byte-for-byte as the base prefix for every Redis key created by this plugin. A missing or empty value uses the generated per-site fallback prefix.
 
-The settings screen is divided into Redis Connection, Object Cache, HTML Page Cache, Cache Warming, and Status tabs. Manual cache warming discovers enabled WordPress system pages, frontend-viewable public post types, and non-empty terms of frontend-viewable public taxonomies. It respects the current Home, Singular, and Archive cache settings and verifies every anonymous URL through a Redis cache HIT while reporting live progress in the open browser tab. Attachment pages are included only when WordPress enables them. The administration interface is available in English and Ukrainian and follows the current WordPress admin language.
+The settings screen is divided into Redis Connection, Object Cache, HTML Page Cache, Cloudflare Cache, Cache Warming, and Status tabs. Manual cache warming discovers enabled WordPress system pages, frontend-viewable public post types, and non-empty terms of frontend-viewable public taxonomies. It respects the current Home, Singular, and Archive cache settings and verifies every anonymous URL through a Redis cache HIT while reporting live progress in the open browser tab. Attachment pages are included only when WordPress enables them. The administration interface is available in English and Ukrainian and follows the current WordPress admin language.
 
 Updates are discovered from the `Version` header in `simple-redis-cache.php` on the public repository's `master` branch and installed through the standard WordPress plugin updater. WordPress native automatic updates are supported when enabled for this plugin.
 
@@ -33,8 +33,9 @@ Updates are discovered from the `Version` header in `simple-redis-cache.php` on 
 5. Enable Object Cache and/or HTML Page Cache on their respective tabs.
 6. Optionally enable singular-page invalidation and/or related taxonomy-archive invalidation on the HTML Page Cache tab.
 7. Optionally set a CDN cache lifetime on the same tab so a shared cache or reverse proxy may store page-cache hits; leave it at zero unless you will purge that cache yourself when content changes.
-8. Optionally use Cache Warming to select public content and keep the tab open until its live progress completes.
-9. Use the Status tab to test the saved connection and inspect diagnostics.
+8. Optionally enter a Cloudflare zone ID and API token on the Cloudflare Cache tab, pick the automatic purge triggers, and use Test Cloudflare connection.
+9. Optionally use Cache Warming to select public content and keep the tab open until its live progress completes.
+10. Use the Status tab to test the saved connection and inspect diagnostics.
 
 For a Unix socket, select Unix socket and enter the raw absolute filesystem path, such as `/home/account/.system/redis.sock`, in the Unix socket path field. Do not add `unix://`; Host and Port are ignored for this connection type.
 
@@ -43,6 +44,8 @@ When HTML Page Cache is enabled, the plugin attempts to add `define( 'WP_CACHE',
 Test Saved Connection performs PING plus an isolated `SET -> GET -> DELETE` round trip with a 30-second TTL. Status also reports the Redis version and `maxmemory_policy`, drop-in paths and file modes, `WP_CACHE`, generated-config ownership/synchronization/mode, and the effective key prefix without exposing Redis credentials.
 
 Sites using plain/query-string permalinks must enable query-string page caching before URLs such as `?p=`, `?page_id=`, `?cat=`, or `?paged=` can be warmed. Unsafe query parameters still always bypass the page cache. Pagination is estimated from WordPress database counts and the global `posts_per_page`; custom query rules can produce individual failed URLs. Discovery stops after 20000 URLs and reports a warning rather than truncating silently. Counters cover every outcome, while the detailed issue list shows at most the first 100 discovery warnings, cache bypasses, and failures; any remaining issue count is shown separately. When enabled, search results and 404 pages may be cached on demand but have no finite discoverable URL list, so the warmer does not include them.
+
+Cloudflare purging needs a scoped API token with the Zone / Cache Purge permission for that zone; the account-wide Global API Key is not used. Test Cloudflare connection tries to read the zone, to report its name and status, and then performs a real single-URL purge of the home page. The zone read needs its own Zone Read permission, so a token scoped to Cache Purge alone simply reports no zone name; only the purge decides whether the test passes. Clear Cloudflare cache purges the whole zone and leaves Redis untouched.
 
 The plugin never overwrites a drop-in owned by another plugin.
 
@@ -81,14 +84,24 @@ because another WordPress cache may use it.
 * Only post updates and term assignments are observed, and only for taxonomies actually registered for that post type. Permanently deleting a post, renaming, merging, or deleting a term itself, removing a relationship through `wp_remove_object_terms()`, and scheduled publication through `wp_publish_post()` do not fire the observed hooks, so the affected HTML stays cached until TTL or a manual page purge.
 * A queued invalidation warning reaches an administrator even when the change came from an editor, the front end, a webhook, or cron: those notices go to a shared queue that the next administrator screen displays.
 * A Redis failure during post-update invalidation does not fail the WordPress save. The request remains fail-open, an administrator warning is queued, and the previous HTML may remain until TTL or manual page purge.
-* The optional CDN cache lifetime only adds `Cache-Control: public, max-age=0, s-maxage=N` to a page-cache hit. The plugin never contacts a shared cache, so neither targeted post-update invalidation nor Clear Page Cache reaches it: an edge may keep serving the previous HTML, including a cached 404, until that lifetime expires and must be purged separately. Changing the value never invalidates already stored pages. A stored response that already carries `Cache-Control` is replayed unchanged, and a validated logged-in hit never receives the header at all, so a session-specific response is not offered to a shared cache even on a site that removes the standard WordPress no-cache headers.
+* The optional CDN cache lifetime only adds `Cache-Control: public, max-age=0, s-maxage=N` to a page-cache hit. Without a configured Cloudflare trigger the plugin does not contact the shared cache at all, so an edge may keep serving the previous HTML, including a cached 404, until that lifetime expires and must be purged separately. With Cloudflare configured, the matching trigger clears it. Changing the value never invalidates already stored pages. A stored response that already carries `Cache-Control` is replayed unchanged, and a validated logged-in hit never receives the header at all, so a session-specific response is not offered to a shared cache even on a site that removes the standard WordPress no-cache headers.
 * With the database transient mirror enabled, a plain `wp_cache_flush()` or `wp_cache_flush_group()` — for example WP-CLI `wp cache flush` — also deletes every standard WordPress transient row from `wp_options`, without the confirmation the admin buttons require. Those rows are retained and the call reports failure whenever a required generation bump did not succeed. `flush_group()` also invalidates the cached options group first, so a group configured as non-persistent still reports failure and keeps its rows when Redis is unreachable.
+* Cloudflare purging is opt-in per trigger. Clear all cache and Clear page cache purge the whole zone; the content-update trigger purges only the exact URLs this plugin already invalidates, so it depends on the HTML Page Cache invalidation options being enabled. Cloudflare purges exact URLs, so deeper archive pagination and generic views are not covered — use a full purge for those. At most 300 URLs are sent per flush, in batches of 30, and any remainder is reported to the administrator so a manual zone purge can finish the job. The purge only runs once the local invalidation succeeded, and the address is captured before the post changes, so unpublishing, trashing or renaming clears the address the CDN actually holds.
+* A Cloudflare failure never blocks the local purge or the WordPress save: the Redis side still completes and an administrator warning is queued.
+* The Cloudflare API token is stored in the WordPress database and the generated early configuration, exactly like the Redis credentials. Use a token scoped to one zone and the Cache Purge permission so a leak cannot do more than clear that cache.
 * Object-cache `expire=0` means the configured Maximum TTL, not infinite storage.
 * Redis is a trusted serialization boundary and must be private and protected from untrusted writes. Missing generation metadata is recreated from a random safe integer rather than `1`, but `noeviction` or a volatile policy is still preferred for a stable hit rate.
 * Redis credentials are stored in the WordPress database and generated early config. File mode `0640` is best-effort; protect database and filesystem access at the hosting layer.
 * GitHub update metadata is cached for 12 hours. A failed check is cached for 1 hour, after which a later WordPress update check may retry.
 
 == Changelog ==
+
+= 0.6.0 =
+* Added a Cloudflare Cache tab with a zone ID, a scoped API token, a manual Clear Cloudflare cache button, and a connection test that proves the token really holds the Cache Purge permission by performing a real single-URL purge.
+* Added three independent automatic purge triggers: with Clear all cache, with Clear page cache, and when content is updated. The content trigger purges the exact URLs this plugin already invalidates and therefore follows the HTML Page Cache invalidation options.
+* The purge address is captured before the post changes, so unpublishing, trashing or renaming clears the address the CDN is actually holding rather than the plain `?p=ID` form WordPress falls back to afterwards.
+* Cloudflare is only purged after the local invalidation succeeded, so a failed Redis bump cannot make the edge refetch and re-hold the same stale page.
+* Cloudflare failures are fail-open: the local purge and the WordPress save still complete and an administrator warning is queued, without turning a successful local purge into an error.
 
 = 0.5.0 =
 * Stopped sending the optional CDN `Cache-Control` on validated logged-in cache hits, so a session-specific response is never offered to a shared cache even when the site removes the standard WordPress no-cache headers.

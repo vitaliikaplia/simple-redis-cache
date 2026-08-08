@@ -105,6 +105,16 @@ final class Simple_Redis_Cache_Early_Config {
 				'debug_header'            => false,
 				'lock_ttl'                => 10,
 			),
+			// Cloudflare purging runs only in the normal admin/plugin runtime, never in
+			// the drop-ins. It lives in the shared schema so one sanitizer and one
+			// generated file stay authoritative, the same way Redis credentials do.
+			'cloudflare'     => array(
+				'zone_id'              => '',
+				'api_token'            => '',
+				'purge_on_clear_all'   => false,
+				'purge_on_clear_page'  => false,
+				'purge_on_post_update' => false,
+			),
 			'site'           => array(
 				'host'            => '',
 				'port'            => 0,

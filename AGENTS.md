@@ -9,7 +9,7 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 1. persistent WordPress Object Cache API через `wp-content/object-cache.php`;
 2. full-page HTML cache через `wp-content/advanced-cache.php`.
 
-Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.5.0`; schema конфігурації — `3`; page payload — `3`.
+Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.6.0`; schema конфігурації — `3`; page payload — `3`.
 
 Незмінні межі поточного продукту, якщо задача прямо не вимагає змінити scope:
 
@@ -22,7 +22,7 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 - єдина користувацька константа для namespace кешу — `WP_CACHE_KEY_SALT`;
 - `WP_CACHE` використовується лише як стандартний прапорець WordPress для `advanced-cache.php`;
 - жодного filesystem cache, Predis, Redis Cluster, Sentinel або replica routing;
-- жодної інтеграції з CDN: немає API-клієнтів, purge-викликів чи знання про конкретного провайдера. Єдиний виняток — опційний `page.shared_max_age`, який лише додає стандартний `Cache-Control` на попадання; що з ним робить проксі, плагіну невідомо, і очищення CDN лишається на операторові;
+- інтеграція з CDN обмежена рівно двома речами: опційний `page.shared_max_age`, який лише додає стандартний `Cache-Control` на попадання, і опційне очищення кешу Cloudflare. Cloudflare-клієнт вміє тільки читати зону та викликати `purge_cache` для неї за scoped API token; жодного account-wide доступу, discovery зон, аналітики, налаштувань зони чи другого провайдера. Інших CDN плагін не знає;
 - жодної мініфікації, scheduled/background preload або cron warmup;
 - автоматична content invalidation обмежена двома незалежними opt-in механізмами: оновлений post/page/CPT із перекладами та публічні term archives, пов'язані з цими posts; непов'язані й generic archives автоматично не очищуються;
 - дозволений лише ручний browser-led прогрів HTML-кешу з відкритої admin-вкладки;
@@ -43,7 +43,8 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 | `includes/class-simple-redis-cache-redis.php` | Мінімальний PhpRedis connection wrapper, generation counters і hash post/term content versions. |
 | `includes/class-simple-redis-cache-dropins.php` | Встановлення, видалення, ownership-check drop-in та безпечне ввімкнення `WP_CACHE`. |
 | `includes/class-simple-redis-cache-admin.php` | Settings API, діагностика, connection test, confirmed purge actions, notices, admin bar і privileged warmup AJAX. |
-| `includes/class-simple-redis-cache-purger.php` | Ручна інвалідація object/page namespaces та очищення DB transients. |
+| `includes/class-simple-redis-cache-cloudflare.php` | Мінімальний клієнт Cloudflare API: перевірка зони, purge everything і purge за списком URL. |
+| `includes/class-simple-redis-cache-purger.php` | Ручна інвалідація object/page namespaces, очищення DB transients і опційний Cloudflare purge. |
 | `includes/class-simple-redis-cache-page-invalidator.php` | Відкладена точкова інвалідація оновлених post/page/CPT, груп перекладів і пов'язаних public term archives. |
 | `includes/class-simple-redis-cache-warmer.php` | Allowlisted discovery публічних frontend URL, URL signatures і server-side warm fallback. |
 | `includes/class-simple-redis-cache-page-capture.php` | Пізня валідація WordPress-відповіді, output capture, знімок post/term content version і атомарний запис HTML із звільненням lock. |
@@ -219,7 +220,21 @@ wp-wpml_current_language, pll_language
 
 Textarea-списки проходять `sanitize_text_field`, trim, видалення порожніх рядків і duplicates.
 
-### 5.4. Internal site metadata
+### 5.4. Cloudflare
+
+| Key | Default | Sanitization/сенс |
+| --- | --- | --- |
+| `cloudflare.zone_id` | порожньо | Зводиться до `[a-f0-9]`; Cloudflare zone ID — 32 hex-символи. |
+| `cloudflare.api_token` | порожньо | Scoped API token із правом Zone / Cache Purge. Пробіли вирізаються. Ніколи не заповнюється назад у HTML: `keep_api_token` працює так само, як `keep_password` для Redis. |
+| `cloudflare.purge_on_clear_all` | `false` | Purge усієї зони разом із `Clear all cache`. |
+| `cloudflare.purge_on_clear_page` | `false` | Purge усієї зони разом із `Clear page cache`. |
+| `cloudflare.purge_on_post_update` | `false` | Purge точних URL, які вже інвалідує targeted invalidation, і лише після успішного Redis-bump. Залежить від опцій розділу `page`: без них інвалідатор не збирає ресурси й purge не відбувається. Адреса запам'ятовується до зміни статусу, тому unpublish/trash/зміна слуга очищають саме те, що лежить на edge. |
+
+Global API Key не підтримується: scoped token можна обмежити однією зоною й одним правом, тому account-wide ключ у схемі відсутній свідомо.
+
+Жоден `cloudflare.*` ключ не входить у `$object_keys`/`$page_keys` `invalidate_changed_settings()`: зміна цих налаштувань не інвалідує Redis, бо вони не змінюють ні payload, ні key schema.
+
+### 5.5. Internal site metadata
 
 `site.host`, `site.port` і `site.fallback_prefix` генеруються із `home_url('/')` та `ABSPATH`, а не беруться з input. `fallback_prefix` — перші 16 символів SHA-256 від `home_url('/') . '|' . ABSPATH`.
 
@@ -490,7 +505,9 @@ X-Simple-Redis-Cache: HIT | MISS | BYPASS
 
 Остання операція виконується незалежно від `transient_db_fallback` і не може відрізнити mirror цього плагіна від інших WordPress transients. Це поточна свідома семантика кнопки object purge.
 
-Object/all потребують окремої confirmation-сторінки та POST із capability + scope-specific nonce + `confirmed=1`. Page-only purge лишається прямою nonce-protected дією, бо не видаляє DB rows. Якщо object-generation bump не вдався, DB transients навмисно зберігаються. Purge не транзакційний: `all` усе ще може успішно інвалідовувати один Redis layer і повернути `WP_Error` через інший. Жоден scope не досягає shared cache: за `page.shared_max_age > 0` копія HIT, яку CDN або reverse proxy зберіг за `s-maxage`, живе до закінчення власного часу — плагін не має CDN purge, тож очищення edge лишається на операторові.
+Після Redis-частини `purge()` за ввімкненого відповідного тригера викликає Cloudflare `purge_everything` — для scope `all` і `page` окремо. Порядок навмисний: Cloudflare-помилка не блокує локальне очищення, а лише додається до `WP_Error` разом із тим, що вже вдалося. Scope `object` Cloudflare не чіпає, бо object cache до edge стосунку не має.
+
+Object/all потребують окремої confirmation-сторінки та POST із capability + scope-specific nonce + `confirmed=1`. Page-only purge лишається прямою nonce-protected дією, бо не видаляє DB rows. Якщо object-generation bump не вдався, DB transients навмисно зберігаються. Purge не транзакційний: `all` усе ще може успішно інвалідовувати один Redis layer і повернути `WP_Error` через інший. Без налаштованого Cloudflare-тригера жоден scope не досягає shared cache: за `page.shared_max_age > 0` копія HIT, яку CDN або reverse proxy зберіг за `s-maxage`, живе до закінчення власного часу. З увімкненим `purge_on_clear_all`/`purge_on_clear_page` відповідний scope додатково очищає зону Cloudflare; будь-який інший CDN лишається на операторові.
 
 ### 10.1. Опційна інвалідація після оновлення контенту
 
@@ -498,7 +515,7 @@ Object/all потребують окремої confirmation-сторінки т�
 
 Коли `page.invalidate_term_archives_on_post_update=true`, той самий invalidator додатково слухає `set_object_terms` із повними old/new `term_taxonomy_id`. Хук фаєриться для будь-якого типу об'єкта, а його `object_id` унікальний лише в межах таксономії, тому обробник додатково вимагає, щоб post type оновленого об'єкта був зареєстрований саме для цієї таксономії: інакше terms на users чи comments зі збіжним ID інвалідували б сторонній пост. Він обробляє лише taxonomies, для яких `is_taxonomy_viewable()` повертає true, збирає current terms оновленого поста та його перекладів до й після пізніх save callbacks і додає ancestors через `get_ancestors()`. Так зміна категорії інвалідує old і new archives, а hierarchical parent archives очищуються тому, що можуть включати child content. Зв'язки translated posts дають tokens відповідних translated term archives без залежності від внутрішніх API мультимовних плагінів.
 
-На shutdown усі post і term-taxonomy resources одним Redis Lua call отримують нові random tokens. Це логічно інвалідує всі їхні HTML variants у Redis: pagination, query-string, language-cookie та optional logged-in/session/access variants. За ненульового `page.shared_max_age` копію, яку shared cache зберіг за `s-maxage`, token bump не змінює — CDN треба чистити окремо. Exact Redis payload фізично видаляється під час наступного stale read або природно за TTL. Static front/posts page також інвалідується, коли queried object є саме оновленим `WP_Post`. Опції singular і taxonomy invalidation незалежні. Непов'язані term archives та generic home/post-type/author/date/search/404/menu/comment/WooCommerce-derived pages не очищуються. Інвалідатор слухає лише `post_updated` і `set_object_terms`, тому низка звичайних core-подій не bump-ить жодного token і лишає HTML валідним до TTL чи ручного page purge:
+На shutdown усі post і term-taxonomy resources одним Redis Lua call отримують нові random tokens. Це логічно інвалідує всі їхні HTML variants у Redis: pagination, query-string, language-cookie та optional logged-in/session/access variants. За ненульового `page.shared_max_age` копію, яку shared cache зберіг за `s-maxage`, token bump сам не змінює: її очищає окремий Cloudflare-purge, якщо ввімкнено `purge_on_post_update`. Інакше CDN треба чистити вручну. Exact Redis payload фізично видаляється під час наступного stale read або природно за TTL. Static front/posts page також інвалідується, коли queried object є саме оновленим `WP_Post`. Опції singular і taxonomy invalidation незалежні. Непов'язані term archives та generic home/post-type/author/date/search/404/menu/comment/WooCommerce-derived pages не очищуються. Інвалідатор слухає лише `post_updated` і `set_object_terms`, тому низка звичайних core-подій не bump-ить жодного token і лишає HTML валідним до TTL чи ручного page purge:
 
 - остаточне видалення поста;
 - перейменування, злиття або видалення самого терміна: `wp_delete_term()` знімає зв'язки через `wp_remove_object_terms()`, який фаєрить `delete_term_relationships`/`deleted_term_relationships`, а не `set_object_terms`;
@@ -506,6 +523,10 @@ Object/all потребують окремої confirmation-сторінки т�
 - публікація за розкладом: `wp_publish_post()` міняє статус прямим `$wpdb->update()` і фаєрить `edit_post`/`save_post`/`wp_insert_post`, але не `post_updated`. Виняток — пост без категорії, якому default term призначається через `wp_set_post_terms()`, і то лише за ввімкненого `invalidate_term_archives_on_post_update`.
 
 Пряма зміна post meta без `post_updated` не очищає singular payload. Присвоєння термів через `wp_set_object_terms()`/`wp_set_post_terms()` без `wp_insert_post()` потрапляє в `set_object_terms`, але handler виходить одразу, якщо вимкнено саме `invalidate_term_archives_on_post_update`; за одночасно ввімкненої singular invalidation той самий виклик змінює й token самого post.
+
+Коли `cloudflare.purge_on_post_update` увімкнено, після **успішного** Redis-bump той самий набір ресурсів перетворюється на URL і йде в Cloudflare `purge_cache` батчами по 30, максимум 300 URL за один flush; надлишок повідомляється окремим warning. Purge не виконується, якщо bump провалився: origin усе одно віддавав би стару генерацію, і щойно очищений edge негайно забрав би її назад на повний `s-maxage`.
+
+Адреса береться двічі. На `post_updated` запам'ятовується permalink **до** зміни, поки старий статус ще в силі: зняття з публікації, переміщення в кошик або зміна слуга роблять так, що на `shutdown` `get_permalink()` повертає вже плоску форму `?p=ID` або нову адресу — тобто саме ту, якої на edge немає. На `shutdown` додається поточна адреса. Обидві беруться лише для publicly viewable статусу, тож збереження чернетки не витрачає API-виклик на адресу, якої ніхто не запитував. Cloudflare очищає точні URL, тож покриваються сам запис і перша сторінка пов'язаних term archives; глибша пагінація — ні, бо prefix purge доступний лише на Enterprise. Generic-подання, які Redis-сторона свідомо не чіпає, тут теж не чіпаються. Помилка Cloudflare не скасовує Redis-інвалідацію й не ламає save — вона лише ставить warning через `queue_notice()`. Так само в `Purger::purge()`: невдалий Cloudflare-purge не потрапляє у повернений `WP_Error` і не перетворює успішне локальне очищення на помилку, а йде окремим warning, інакше адміністратор натискав би кнопку повторно й щоразу запускав новий full-zone purge. Сам purge гейтиться успіхом page-generation bump, а не відсутністю будь-яких помилок: збій видалення DB transients стосується object-шару й не має лишати edge зі старим HTML.
 
 Якщо Redis invalidation не вдалася, save WordPress лишається успішним у fail-open режимі, а в чергу ставиться warning notice. `queue_notice()` кладе його в user meta лише тоді, коли автор запиту має `manage_options`; save від Редактора, з frontend, webhook або cron іде у спільну option-чергу, яку наступний адміністратор вичитує разом із власною. На відміну від settings-policy transition, runtime/drop-in не вимикаються: старий HTML може жити до TTL або ручного page purge.
 
@@ -546,23 +567,26 @@ Warmup не очищає generation і не перезаписує valid existin
 
 ## 11. Admin UI та security
 
-Сторінка: **Settings → Redis Cache**, slug `simple-redis-cache`. Capability — `manage_options`. Інтерфейс має п'ять вкладок; JavaScript завантажується лише для ручного прогріву:
+Сторінка: **Settings → Redis Cache**, slug `simple-redis-cache`. Capability — `manage_options`. Інтерфейс має шість вкладок; JavaScript завантажується лише для ручного прогріву:
 
 - `redis` — підключення до Redis;
 - `object` — Object Cache;
 - `page` — HTML Page Cache;
+- `cloudflare` — zone ID, API token, три opt-in тригери, connection test і ручний purge;
 - `warm` — source selection, live progress і verified manual warmup;
 - `status` — live diagnostics, connection test і ручне очищення.
 
 Menu slug залишається спільним, а Settings API sections реєструються на внутрішніх page IDs `simple-redis-cache-{tab}`. `tab` читається тільки як string, проходить `wp_unslash()`/`sanitize_key()` та allowlist; невідоме значення повертає `redis`.
 
-Форми перших трьох вкладок передають marker `simple_redis_cache_settings[_settings_tab]`. `Admin::sanitize_settings()` зливає на сервері тільки надіслану групу з поточним повним config, після чого передає результат у `Config::sanitize()`. Якщо marker присутній, але tab поза allowlist `FORM_TABS` або відповідної групи немає в payload, злиття не відбувається: додається settings error `src_invalid_settings_tab` і повертається поточний збережений config без змін. Так збереження однієї вкладки не скидає дві інші, unchecked checkbox активної вкладки все одно стає `false`, а Redis password не копіюється в hidden HTML. Без marker зберігається сумісна поведінка sanitization повного payload. Вкладки `warm` і `status` не мають Settings API form і не виконують Save.
+Форми перших чотирьох вкладок передають marker `simple_redis_cache_settings[_settings_tab]`. `Admin::sanitize_settings()` зливає на сервері тільки надіслану групу з поточним повним config, після чого передає результат у `Config::sanitize()`. Якщо marker присутній, але tab поза allowlist `FORM_TABS` або відповідної групи немає в payload, злиття не відбувається: додається settings error `src_invalid_settings_tab` і повертається поточний збережений config без змін. Так збереження однієї вкладки не скидає дві інші, unchecked checkbox активної вкладки все одно стає `false`, а Redis password не копіюється в hidden HTML. Без marker зберігається сумісна поведінка sanitization повного payload. Вкладки `warm` і `status` не мають Settings API form і не виконують Save. Вкладка `cloudflare` має і Settings API form, і два окремі POST-форми під нею — вкладені форми неприпустимі, тому connection test і ручний purge рендеряться після Save-форми.
 
 Hooks:
 
 - `admin_menu`, `admin_init`, `admin_notices`, `admin_enqueue_scripts`;
 - `admin_post_simple_redis_cache_test_redis`;
 - `admin_post_simple_redis_cache_purge`;
+- `admin_post_simple_redis_cache_test_cloudflare`;
+- `admin_post_simple_redis_cache_purge_cloudflare`;
 - `wp_ajax_simple_redis_cache_prepare_warm`;
 - `wp_ajax_simple_redis_cache_warm_url`;
 - `admin_bar_menu` priority 100;
@@ -645,7 +669,7 @@ Object settings invalidation перемикає Redis namespace, але не в�
 
 ### Update
 
-WordPress update не запускає activation hook. Тому normal `plugins_loaded` виконує versioned `maybe_upgrade()` до ініціалізації admin/updater hooks. Для старішої schema він normalize-ить option, інвалідує enabled cache semantics, регенерує early config і resync-ить templates. Поточна schema `3` додає opt-in targeted content invalidation settings і payload v3; у 0.4.0 в межах тієї самої schema `3` з'явився page `shared_max_age` — суто additive ключ, default якого підмішується через `Config::merge()`/`Early_Config::load()`, тому bump не був потрібен. Loaders у plugin directory оновлюються разом із кодом. Кожне майбутнє schema change повинно підняти `Early_Config::CONFIG_VERSION`, додати transform за потреби й розширити migration tests; суто additive ключ із безпечним default може лишитися в поточній schema, але це має бути свідомим рішенням.
+WordPress update не запускає activation hook. Тому normal `plugins_loaded` виконує versioned `maybe_upgrade()` до ініціалізації admin/updater hooks. Для старішої schema він normalize-ить option, інвалідує enabled cache semantics, регенерує early config і resync-ить templates. Поточна schema `3` додає opt-in targeted content invalidation settings і payload v3; у 0.4.0 в межах тієї самої schema `3` з'явився page `shared_max_age`, а у 0.6.0 — секція `cloudflare`; обидві зміни суто additive, їхні defaults підмішуються через `Config::merge()`/`Early_Config::load()`, і жоден ранній drop-in їх не читає, тому bump не був потрібен. Loaders у plugin directory оновлюються разом із кодом. Кожне майбутнє schema change повинно підняти `Early_Config::CONFIG_VERSION`, додати transform за потреби й розширити migration tests; суто additive ключ із безпечним default може лишитися в поточній schema, але це має бути свідомим рішенням.
 
 ### Uninstall
 
@@ -731,13 +755,20 @@ Tag або GitHub Release поточному updater не потрібні: но
 - Object payload декодується native `unserialize()` з objects; Redis має бути trusted/private і не приймати сторонніх writes.
 - Кожна нова persistent group створює group-generation meta key без TTL; dynamic/unbounded group names можуть накопичувати permanent metadata.
 - Hash `page-content-versions` не має TTL і накопичує по одному field для кожного відстеженого post/term resource; global page purge видаляє весь hash, а звичайна точкова інвалідація лише змінює відповідні fields.
+- Cloudflare API token лежить і в WordPress DB, і у generated early config, як і Redis credentials, хоча ранній runtime його не читає. Витік цього файла або БД розкриває токен; scoped token із правом лише Cache Purge для однієї зони обмежує наслідки.
+- Cloudflare purge за URL точний: пагінація архівів, generic-подання й будь-які інші представлення оновленого контенту на edge не очищаються. Повне скидання дає лише purge everything.
+- Один flush надсилає щонайбільше 300 URL (10 запитів по 30). Надлишок повідомляється адміністратору окремим warning, але не очищається; після масових операцій на кшталт bulk-edit потрібен ручний purge усієї зони.
+- Purge синхронний у save-запиті: до 10 послідовних HTTP-викликів із 15-секундним timeout на `shutdown`. Недоступний Cloudflare відчутно сповільнює збереження запису.
+- `normalize_urls()` відкидає адреси з іншим хостом, ніж `home_url()`, тому на мультимовних конфігураціях з окремими доменами переклади інвалідуються в Redis, але не на edge.
+- Токен зберігається у generated early config, який підключається на кожному frontend-запиті, хоча ранній runtime його не читає.
+- Cloudflare rate limits і збої не блокують локальне очищення: вони дають warning, а edge лишається зі старим вмістом до кінця його TTL.
 - Discovery прогріву обмежене 20000 URL: на дуже великому сайті частину розділів доведеться гріти окремими запусками.
 - Ownership marker не є криптографічною ідентичністю.
 - `WP_CACHE` лишається після uninstall.
 - GitHub package — mutable archive поточної гілки `master` без pin до commit, незалежної checksum або signature.
 - Redis meta eviction створює новий random namespace і не відроджує generation `1`, але погіршує hit rate та лишає orphaned payload до TTL.
 - Зовнішня зміна `WP_CACHE_KEY_SALT` не може автоматично bump-нути невідомий old prefix; повернення старого salt до TTL може знову відкрити його namespace, якщо його не очистили до зміни.
-- Ненульовий `page.shared_max_age` віддає HTML shared cache, який плагін не вміє інвалідувати: `Cache-Control: public, max-age=0, s-maxage=N` додається лише на anonymous HIT у `serve()`, тоді як content tokens, generation bump і manual purge торкаються самого Redis. CDN продовжує віддавати стару сторінку до кінця `s-maxage`, включно з cached 404; очищення edge лишається ручною операцією оператора.
+- Ненульовий `page.shared_max_age` віддає HTML shared cache, який без налаштованого Cloudflare плагін інвалідувати не вміє: `Cache-Control: public, max-age=0, s-maxage=N` додається лише на anonymous HIT у `serve()`, тоді як content tokens, generation bump і manual purge торкаються самого Redis. Тоді CDN віддає стару сторінку до кінця `s-maxage`, включно з cached 404. Cloudflare-тригери це закривають; для інших провайдерів очищення edge лишається ручною операцією.
 - `shared_max_age` навмисно не входить у `$page_keys` `invalidate_changed_settings()`: зміна або обнулення значення нічого не інвалідує й не відкликає копії, які shared cache уже зберіг зі старим `s-maxage`.
 - Інвалідатор реєструє лише `post_updated` і `set_object_terms`, тому поза покриттям лишаються остаточне видалення поста, перейменування/злиття/видалення терміна, будь-яке `wp_remove_object_terms()` і публікація за розкладом через `wp_publish_post()`; їхній HTML лишається валідним до TTL чи manual page purge.
 - `wp_cache_flush()` і `wp_cache_flush_group()` за ввімкненого DB mirror видаляють усі стандартні transients із `wp_options`, включно з чужими, і робить це будь-який виклик — наприклад WP-CLI `wp cache flush` — без окремого підтвердження, якого вимагають кнопки в адмінці. Рядки зберігаються, лише коли generation bump не вдався.
@@ -756,6 +787,8 @@ Tag або GitHub Release поточному updater не потрібні: но
 - Зміни page cache перевіряти окремо для anonymous/logged-in, GET/HEAD, HIT/MISS/BYPASS, query, cookies, headers, output buffers і races.
 - Зміни object cache перевіряти для L1, Redis, non-persistent groups, DB mirror, force read, NX/XX і Redis outage.
 - Не розширювати opt-in invalidation за межі documented singular і assigned public term archives на generic archives, comments, menus, arbitrary meta або WooCommerce events без прямої вимоги, окремого дизайну й документації. Ніколи не додавати destructive Redis flush.
+- Cloudflare-клієнт лишається вузьким: тільки zone read і `purge_cache` для налаштованої зони. Не додавати account-level виклики, discovery зон, зміну налаштувань зони чи другого CDN-провайдера без окремого дизайну.
+- API token ніколи не потрапляє у вивід, notices, логи чи діагностику.
 - Не вважати activation hook migration hook: він не запускається при update. Schema transitions мають іти через versioned `maybe_upgrade()` та tests.
 - Якщо змінено drop-in template path або plugin directory behavior, перевірити GitHub updater normalization.
 
@@ -768,6 +801,7 @@ Dependency-light checks запускаються напряму через PHP �
 - `tests/response-safety.php` — відсутність `s-maxage` на logged-in HIT, ігнорування відкинутого output-буфера, утримання lock відкритим capture, збереження DB transients при невдалому bump, обробка несеріалізовних значень, `replace()` для mirrored non-persistent групи і per-call семантика `error()`;
 - `tests/admin-notice-routing.php` — маршрутизація повідомлень адміністратору незалежно від автора запиту та обмеження черги;
 - `tests/warmer-discovery.php` — normalized deduplication URL прогріву й наявність межі discovery;
+- `tests/cloudflare.php` — endpoint і bearer-заголовок, батчинг по 30 і межа 300, same-site фільтр URL, мапа помилок API, verify через реальний purge та відсутність токена в повідомленнях;
 - `tests/page-capture-post-tracking.php` — payload association лише з enabled frontend-viewable `WP_Post`/`WP_Term`, без помилкового author/user ID;
 - `tests/page-invalidator.php` — post/term hooks, old/new/parent terms, WPML/Polylang translations і fail-open warning;
 - `tests/page-content-invalidation-integration.php` — post/term token init/bump/eviction recovery і reset під час global page bump;
@@ -788,6 +822,7 @@ php tests/page-request.php
 php tests/response-safety.php
 php tests/admin-notice-routing.php
 php tests/warmer-discovery.php
+php tests/cloudflare.php
 php tests/page-capture-post-tracking.php
 php tests/page-invalidator.php
 php tests/github-updater.php
@@ -853,7 +888,8 @@ wp plugin status simple-redis-cache
 
 Для admin UI та локалізації:
 
-- direct links, порядок `page → warm → status` і активний `aria-current` для всіх п'яти вкладок;
+- direct links, порядок `page → cloudflare → warm → status` і активний `aria-current` для всіх шести вкладок;
+- Cloudflare: збереження zone ID/token, retain/replace/clear токена, connection test на валідному та read-only токені, ручний purge, вимкнені кнопки без credentials;
 - `?tab=unknown` і `?tab[]=page` без TypeError повертають Redis-вкладку;
 - Save кожної вкладки не змінює дві інші групи, включно з password retain/replace/clear;
 - `warm` і `status` не містять Settings API form, а live PING не виконується на інших вкладках;

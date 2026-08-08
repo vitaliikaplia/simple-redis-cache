@@ -12,6 +12,13 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	private static array $pending_post_ids = array();
 	/** @var array<int, true> Term taxonomy IDs, which are unique across taxonomies. */
 	private static array $pending_term_taxonomy_ids = array();
+	/**
+	 * @var array<string, true> Public URLs captured before the update, for the edge.
+	 *
+	 * A post that is unpublished, trashed or renamed no longer resolves to the
+	 * address the CDN actually holds, and shutdown runs after the change.
+	 */
+	private static array $pending_cloudflare_urls = array();
 	private static bool $shutdown_scheduled = false;
 
 	public static function init(): void {
@@ -41,6 +48,14 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		if ( ! self::is_frontend_post_type( $post_type ) ) {
 			return;
 		}
+
+		/*
+		 * Capture the address the edge is actually holding, before the new status can
+		 * change it. Unpublishing, trashing or renaming a post makes get_permalink()
+		 * return the plain ?p=ID form or the new slug, so purging at shutdown alone
+		 * would clear an address the CDN never cached and leave the live one served.
+		 */
+		self::remember_cloudflare_url( $post_before, $config );
 
 		$translation_ids = self::translation_ids( $post_id, $post_type );
 		foreach ( $translation_ids as $translation_id ) {
@@ -144,14 +159,25 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		if ( ! empty( $config['page']['invalidate_term_archives_on_post_update'] ) ) {
 			$resources['term'] = array_keys( self::$pending_term_taxonomy_ids );
 		}
+		/* Addresses captured before the update survive the reset below. */
+		$captured_urls = array_keys( self::$pending_cloudflare_urls );
 		self::reset_pending();
 
 		if ( empty( $resources['post'] ) && empty( $resources['term'] ) ) {
 			return;
 		}
 
-		$redis = new Simple_Redis_Cache_Redis( $config );
-		if ( false !== $redis->bump_page_content_versions( $resources ) ) {
+		$redis  = new Simple_Redis_Cache_Redis( $config );
+		$bumped = $redis->bump_page_content_versions( $resources );
+
+		/*
+		 * Only clear the edge once the origin really is invalidated. Purging while
+		 * Redis still serves the old generation makes staleness worse: the CDN
+		 * immediately refetches that same stale page and holds it for a fresh
+		 * s-maxage.
+		 */
+		if ( false !== $bumped ) {
+			self::purge_cloudflare_urls( $resources, $captured_urls, $config );
 			return;
 		}
 
@@ -163,6 +189,120 @@ final class Simple_Redis_Cache_Page_Invalidator {
 			),
 			'warning'
 		);
+	}
+
+	/**
+	 * Clear the same resources at the Cloudflare edge.
+	 *
+	 * Cloudflare purges exact URLs, so this covers each updated post and the first
+	 * page of each related term archive. Deeper pagination is not addressed —
+	 * prefix purging is Enterprise-only — and neither are the generic views the
+	 * Redis side deliberately leaves alone. Failure is fail-open with a warning,
+	 * exactly like a failed Redis invalidation.
+	 *
+	 * @param array{post?:int[],term?:int[]} $resources
+	 * @param string[]                       $captured_urls Addresses seen before the update.
+	 * @param array<string, mixed>           $config
+	 */
+	private static function purge_cloudflare_urls( array $resources, array $captured_urls, array $config ): void {
+		if ( ! Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_post_update', $config ) ) {
+			return;
+		}
+
+		/*
+		 * The pre-update addresses belong to posts, so they only apply when singular
+		 * invalidation is the thing that ran. With only taxonomy invalidation enabled
+		 * they would spend the URL budget on a page this flush never invalidated.
+		 */
+		$urls = empty( $resources['post'] ) ? array() : $captured_urls;
+		foreach ( (array) ( $resources['post'] ?? array() ) as $post_id ) {
+			$permalink = self::public_permalink( (int) $post_id );
+			if ( null !== $permalink ) {
+				$urls[] = $permalink;
+			}
+		}
+
+		foreach ( (array) ( $resources['term'] ?? array() ) as $term_taxonomy_id ) {
+			$term = get_term_by( 'term_taxonomy_id', (int) $term_taxonomy_id );
+			if ( ! is_object( $term ) || is_wp_error( $term ) ) {
+				continue;
+			}
+
+			$link = get_term_link( $term );
+			if ( is_string( $link ) && '' !== $link ) {
+				$urls[] = $link;
+			}
+		}
+
+		if ( empty( $urls ) ) {
+			return;
+		}
+
+		$purged = Simple_Redis_Cache_Cloudflare::purge_urls( $urls, $config );
+		if ( ! is_wp_error( $purged ) ) {
+			if ( ! empty( $purged['skipped'] ) ) {
+				Simple_Redis_Cache_Admin::queue_notice(
+					sprintf(
+						/* translators: %d: number of URLs left on the CDN. */
+						__( 'This update touched more URLs than one Cloudflare purge can carry, so %d of them were left on the CDN. Use Clear Cloudflare cache to clear the whole zone.', 'simple-redis-cache' ),
+						(int) $purged['skipped']
+					),
+					'warning'
+				);
+			}
+			return;
+		}
+
+		Simple_Redis_Cache_Admin::queue_notice(
+			sprintf(
+				/* translators: %s: Cloudflare API error. */
+				__( 'Could not clear the Cloudflare cache for the updated content: %s', 'simple-redis-cache' ),
+				implode( ' ', $purged->get_error_messages() )
+			),
+			'warning'
+		);
+	}
+
+	/**
+	 * Record the pre-update public address of a post, if it had one.
+	 *
+	 * @param mixed                $post
+	 * @param array<string, mixed> $config
+	 */
+	private static function remember_cloudflare_url( mixed $post, array $config ): void {
+		if ( ! is_object( $post ) || ! Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_post_update', $config ) ) {
+			return;
+		}
+
+		$permalink = self::public_permalink( $post );
+		if ( null !== $permalink ) {
+			self::$pending_cloudflare_urls[ $permalink ] = true;
+		}
+	}
+
+	/**
+	 * Return a post's permalink only while its status is publicly viewable.
+	 *
+	 * A non-viewable status makes WordPress fall back to the plain ?p=ID form,
+	 * which no visitor ever requested and no CDN ever cached. Purging it would
+	 * spend an API call on nothing while the real address stayed on the edge.
+	 *
+	 * @param int|WP_Post $post
+	 */
+	private static function public_permalink( mixed $post ): ?string {
+		$post = get_post( $post );
+		if ( ! is_object( $post ) ) {
+			return null;
+		}
+
+		$status = get_post_status_object( (string) ( $post->post_status ?? '' ) );
+		if ( ! is_object( $status ) || ! is_post_status_viewable( $status ) ) {
+			return null;
+		}
+
+		$permalink = get_permalink( $post );
+
+		return is_string( $permalink ) && '' !== $permalink ? $permalink : null;
 	}
 
 	/** @param array<string, mixed> $config */
@@ -283,6 +423,7 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	private static function reset_pending(): void {
 		self::$pending_post_ids          = array();
 		self::$pending_term_taxonomy_ids = array();
+		self::$pending_cloudflare_urls   = array();
 	}
 
 	/**
