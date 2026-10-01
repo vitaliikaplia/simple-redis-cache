@@ -101,7 +101,7 @@ Cloudflare очищає точні адреси, тож при оновленн�
 
 ### Якщо ви кешуєте HTML на Cloudflare
 
-Це окрема історія, і її треба налаштувати **на боці Cloudflare** — плагін тут допомогти не може.
+Це окрема історія, і налаштовується вона **на боці Cloudflare**: сам плагін змінити правило в Cloudflare не може й не намагається, але вкладка **Кеш Cloudflare** дає готовий вираз саме для вашого сайту.
 
 Ключ кешу Cloudflare за замовчуванням складається з методу, хоста й URL. **Cookie в нього не входять.** Для CDN запит залогіненого адміністратора й запит анонімного відвідувача — це буквально один і той самий запит. Тому послідовність виходить така:
 
@@ -111,20 +111,30 @@ Cloudflare очищає точні адреси, тож при оновленн�
 
 На третьому кроці запит **до сайту не доходить узагалі**. Плагін не має нагоди зробити `BYPASS`, бо його в цьому запиті немає. Саме тому опція **Кешувати авторизованих користувачів** тут ні до чого: вона керує кешем у Redis, а рішення ухвалює CDN раніше.
 
-Виправляється це умовою в самому Cache Rule — щоб запит із cookie авторизації під правило просто не підпадав. Через **Edit expression** приведіть вираз до такого вигляду (підставте свій домен):
+Виправляється це умовою в самому Cache Rule — щоб запит із cookie авторизації під правило просто не підпадав. **Готовий вираз для вашого сайту показує вкладка Кеш Cloudflare** — його лишається скопіювати в **Edit expression**. Він генерується з адреси сайту, шляхів адмінки, логіну, REST і cron так, як їх повідомляє сам WordPress (тобто правильно і для сайту в підпапці, і для перейменованої сторінки входу), та зі списку **Виключені cookie запиту** вкладки HTML-кешу — тож CDN відмовляє тим самим відвідувачам, яким уже відмовляє плагін (винятки — розмиті патерни, про які вкладка попереджає окремо). Cookie авторизації й паролю до запису додаються завжди. Шлях, що покриває саму головну адресу, у вираз не потрапляє — інакше правило вимкнулося б для всього сайту. Патерни cookie, які неможливо передати правилом на безкоштовному тарифі (наприклад `*session*`), вкладка перелічує окремо, а не мовчки відкидає.
+
+Для сайту `example.com` у корені домену з налаштуваннями за замовчуванням вкладка видає ось такий вираз. Тут він розбитий на рядки для читабельності; на вкладці це один рядок — саме його й копіюйте:
 
 ```
 (http.host eq "example.com"
- and not starts_with(http.request.uri.path, "/wp-admin")
- and not starts_with(http.request.uri.path, "/wp-json")
- and not starts_with(http.request.uri.path, "/wp-login")
- and not starts_with(http.request.uri.path, "/wp-cron.php")
+ and not (http.request.uri.path eq "/wp-admin" or starts_with(http.request.uri.path, "/wp-admin/"))
+ and not (http.request.uri.path eq "/wp-login.php" or starts_with(http.request.uri.path, "/wp-login.php/"))
+ and not (http.request.uri.path eq "/wp-json" or starts_with(http.request.uri.path, "/wp-json/"))
+ and not (http.request.uri.path eq "/wp-cron.php" or starts_with(http.request.uri.path, "/wp-cron.php/"))
  and not http.cookie contains "wordpress_logged_in_"
  and not http.cookie contains "wp-postpass_"
- and not http.cookie contains "comment_author_")
+ and not http.cookie contains "wordpress_sec_"
+ and not http.cookie contains "comment_author_"
+ and not http.cookie contains "woocommerce_items_in_cart"
+ and not http.cookie contains "woocommerce_cart_hash"
+ and not http.cookie contains "wp_woocommerce_session_"
+ and not http.cookie contains "edd_items_in_cart"
+ and not http.cookie contains "PHPSESSID")
 ```
 
-Для WooCommerce додайте ще `and not http.cookie contains "woocommerce_items_in_cart"` і `and not http.cookie contains "wp_woocommerce_session_"`.
+Кожен службовий шлях виключається як цілий сегмент — сам шлях і все під ним, — тож якщо плагін прихованого входу перенесе логін на коротку адресу на кшталт `/go`, сторінки `/golf/` чи `/google-ads/` з кешу CDN не випадуть. Cookie WooCommerce та EDD тут лише тому, що вони є у списку виключень за замовчуванням; на сайті без цих плагінів такі умови просто ніколи не спрацьовують.
+
+Вираз будується локально, без жодного звернення до Cloudflare API, а вкладка показує його довжину й попереджає, якщо він перевищує 4000 символів, які приймає редактор правил Cloudflare.
 
 Умову варто тримати саме всередині наявного правила, а не виносити в окреме bypass-правило: під один запит може підпадати кілька Cache Rules, і тоді результат залежить від їхнього порядку. Одне правило з повним виразом такого питання не створює.
 

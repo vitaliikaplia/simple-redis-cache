@@ -236,6 +236,73 @@ $reset( array( new WP_Error( 'http_request_failed', 'failed for https://api.clou
 $error = Simple_Redis_Cache_Cloudflare::purge_everything( $config );
 $assert( str_contains( implode( ' ', $error->get_error_messages() ), 'Could not reach the Cloudflare API' ), 'A transport error was not wrapped.' );
 
+/* ---- the HTML Cache Rule recipe shown on the Cloudflare tab ---- */
+
+$paths_of = static function ( string $expression ): array {
+	preg_match_all( '/not \(http\.request\.uri\.path eq "([^"]*)" or starts_with\(http\.request\.uri\.path, "([^"]*)"\)\)/', $expression, $matches, PREG_SET_ORDER );
+	$paths = array();
+	foreach ( $matches as $match ) {
+		// Both halves must describe the same segment: the path itself and everything below it.
+		$paths[] = $match[2] === $match[1] . '/' ? $match[1] : 'MISMATCH:' . $match[1] . '|' . $match[2];
+	}
+	return $paths;
+};
+$cookies_of = static function ( string $expression ): array {
+	preg_match_all( '/not http\.cookie contains "((?:[^"\\\\]|\\\\.)*)"/', $expression, $matches );
+	return $matches[1];
+};
+
+$rule = Simple_Redis_Cache_Cloudflare::html_cache_rule(
+	'Example.TEST',
+	array( '/wp-admin/', '/wp-login.php', '/wp-json/', '/wp-cron.php', '/wp-admin/' ),
+	array( 'comment_author_', 'wordpress_logged_in_', 'my_cart_*' ),
+	'/'
+);
+$expression = $rule['expression'];
+$assert( str_starts_with( $expression, '(http.host eq "example.test" and ' ) && str_ends_with( $expression, ')' ), 'The rule is not a single parenthesised expression scoped to the lowercased host.' );
+$assert( array( '/wp-admin', '/wp-login.php', '/wp-json', '/wp-cron.php' ) === $paths_of( $expression ), 'The rule did not exclude each service path exactly once, without its trailing slash.' );
+$assert( ! str_contains( $expression, "\n" ), 'The rule spans several lines; a single line is the only form guaranteed to paste cleanly.' );
+
+$cookies = $cookies_of( $expression );
+$assert( in_array( 'wordpress_logged_in_', $cookies, true ) && in_array( 'wp-postpass_', $cookies, true ), 'The auth and post-password cookies are not always excluded.' );
+$assert( 1 === count( array_keys( $cookies, 'wordpress_logged_in_', true ) ), 'A cookie listed twice produced two clauses.' );
+$assert( in_array( 'comment_author_', $cookies, true ), 'A configured excluded cookie did not reach the rule.' );
+$assert( in_array( 'my_cart_', $cookies, true ), 'A trailing-wildcard pattern was not reduced to its literal prefix.' );
+
+// The required cookies stay even when the site's own list is empty.
+$bare = Simple_Redis_Cache_Cloudflare::html_cache_rule( 'example.test', array(), array(), '/' );
+$assert( array( 'wordpress_logged_in_', 'wp-postpass_' ) === $cookies_of( $bare['expression'] ), 'Clearing Excluded request cookies also dropped the auth cookie from the edge rule.' );
+
+// Patterns too vague for a free-plan rule are reported, never silently dropped.
+$vague = Simple_Redis_Cache_Cloudflare::html_cache_rule( 'example.test', array(), array( '*session*', 'x?', 'ab*', 'ok_cookie' ), '/' );
+$assert( array( '*session*', 'x?', 'ab*' ) === $vague['skipped'], 'Vague cookie patterns were not reported back.' );
+$assert( in_array( 'ok_cookie', $cookies_of( $vague['expression'] ), true ), 'A valid pattern was lost next to vague ones.' );
+
+// A path that covers the home URL would switch the rule off for the whole site.
+// Plain permalinks put REST at home_url('?rest_route=/'), whose path is the home.
+$root_plain = Simple_Redis_Cache_Cloudflare::html_cache_rule( 'example.test', array( '/wp-admin/', '/', '/wp-cron.php' ), array(), '/' );
+$assert( array( '/wp-admin', '/wp-cron.php' ) === $paths_of( $root_plain['expression'] ), 'A root REST path excluded the whole site from the rule.' );
+
+$sub_plain = Simple_Redis_Cache_Cloudflare::html_cache_rule( 'example.test', array( '/blog/wp-admin/', '/blog/', '/blog/wp-cron.php' ), array(), '/blog/' );
+$assert( array( '/blog/wp-admin', '/blog/wp-cron.php' ) === $paths_of( $sub_plain['expression'] ), 'A subdirectory home path excluded the whole site from the rule.' );
+
+$ancestor = Simple_Redis_Cache_Cloudflare::html_cache_rule( 'example.test', array( '/', '/sites', '/sites/blog' ), array(), '/sites/blog' );
+$assert( array() === $paths_of( $ancestor['expression'] ), 'A path above the home URL was kept although it covers every page.' );
+
+$sibling = Simple_Redis_Cache_Cloudflare::html_cache_rule( 'example.test', array( '/blogger/admin' ), array(), '/blog/' );
+$assert( array( '/blogger/admin' ) === $paths_of( $sibling['expression'] ), 'A sibling path sharing a text prefix with the home was mistaken for it.' );
+
+// A path is excluded as a whole segment, so a short custom login slug such as
+// /go does not drag /golf/ or /google-ads/ out of the edge cache with it.
+$short = Simple_Redis_Cache_Cloudflare::html_cache_rule( 'example.test', array( '/go/' ), array(), '/' );
+$assert( ! preg_match( '/starts_with\(http\.request\.uri\.path, "\/go"\)/', $short['expression'] ), 'A path was excluded as a bare prefix, which also excludes unrelated pages that merely start with it.' );
+$assert( array( '/go' ) === $paths_of( $short['expression'] ), 'The segment exclusion for a short path is malformed.' );
+
+// Values are quoted as rule-language strings, so a stray quote cannot break out.
+$quoted = Simple_Redis_Cache_Cloudflare::html_cache_rule( 'example.test', array(), array( 'bad"name', 'back\\slash' ), '/' );
+$assert( str_contains( $quoted['expression'], 'contains "bad\\"name"' ), 'A double quote in a cookie pattern was not escaped.' );
+$assert( str_contains( $quoted['expression'], 'contains "back\\\\slash"' ), 'A backslash in a cookie pattern was not escaped.' );
+
 if ( ! empty( $failures ) ) {
 	foreach ( $failures as $failure ) {
 		fwrite( STDERR, 'FAIL: ' . $failure . "\n" );

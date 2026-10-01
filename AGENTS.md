@@ -9,7 +9,7 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 1. persistent WordPress Object Cache API через `wp-content/object-cache.php`;
 2. full-page HTML cache через `wp-content/advanced-cache.php`.
 
-Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.6.0`; schema конфігурації — `3`; page payload — `3`.
+Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.7.0`; schema конфігурації — `3`; page payload — `3`.
 
 Незмінні межі поточного продукту, якщо задача прямо не вимагає змінити scope:
 
@@ -43,7 +43,7 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 | `includes/class-simple-redis-cache-redis.php` | Мінімальний PhpRedis connection wrapper, generation counters і hash post/term content versions. |
 | `includes/class-simple-redis-cache-dropins.php` | Встановлення, видалення, ownership-check drop-in та безпечне ввімкнення `WP_CACHE`. |
 | `includes/class-simple-redis-cache-admin.php` | Settings API, діагностика, connection test, confirmed purge actions, notices, admin bar і privileged warmup AJAX. |
-| `includes/class-simple-redis-cache-cloudflare.php` | Мінімальний клієнт Cloudflare API: перевірка зони, purge everything і purge за списком URL. |
+| `includes/class-simple-redis-cache-cloudflare.php` | Мінімальний клієнт Cloudflare API: перевірка зони, purge everything і purge за списком URL; плюс локальна, без API-викликів, генерація виразу Cache Rule для HTML на edge. |
 | `includes/class-simple-redis-cache-purger.php` | Ручна інвалідація object/page namespaces, очищення DB transients і опційний Cloudflare purge. |
 | `includes/class-simple-redis-cache-page-invalidator.php` | Відкладена точкова інвалідація оновлених post/page/CPT, груп перекладів і пов'язаних public term archives. |
 | `includes/class-simple-redis-cache-warmer.php` | Allowlisted discovery публічних frontend URL, URL signatures і server-side warm fallback. |
@@ -233,6 +233,14 @@ Textarea-списки проходять `sanitize_text_field`, trim, видал
 Global API Key не підтримується: scoped token можна обмежити однією зоною й одним правом, тому account-wide ключ у схемі відсутній свідомо.
 
 Жоден `cloudflare.*` ключ не входить у `$object_keys`/`$page_keys` `invalidate_changed_settings()`: зміна цих налаштувань не інвалідує Redis, бо вони не змінюють ні payload, ні key schema.
+
+Вкладка також показує вираз Cache Rule для HTML на edge. Його будує `Cloudflare::html_cache_rule()` локально, без жодного API-виклику; плагін ніколи не створює й не змінює правило в Cloudflare сам. Вхідні дані:
+
+- хост — `site.host` (fallback — хост `home_url()`);
+- шляхи — так, як їх повідомляє WordPress: `admin_url()`, `wp_login_url()`, `rest_url()`, `site_url('wp-cron.php')`. Тому вираз коректний для subdirectory install і для перейменованої сторінки входу;
+- cookie — `wordpress_logged_in_` і `wp-postpass_` завжди, плюс `page.excluded_cookies`, щоб edge відмовляв рівно тим, кому вже відмовляє origin.
+
+Кожен шлях виключається як цілий сегмент — `not (path eq X or starts_with(path, X/))`, — інакше короткий custom login slug на кшталт `/go` витягнув би з edge-кешу й `/golf/`. Шлях, що покриває сам home URL (порожній, `/`, home path або його предок), відкидається: з plain permalinks `rest_url()` має шлях home URL, і такий рядок вимкнув би правило для всього сайту; ці запити несуть `?rest_route=`, який origin і так не кешує. Free plan не має regex для cookie, тож кожен патерн стає `contains` по літералу до першого `*`/`?`; літерал коротший за 3 символи не додається, а патерн показується адміністратору окремим warning. Значення екрануються як рядкові літерали Cloudflare (`\` і `"`). Вираз — один рядок; UI рахує довжину в символах і попереджає понад 4000. Info-підказка з'являється, коли HTML-кеш вимкнений або `page.shared_max_age = 0`: з рекомендованим Edge TTL Cloudflare тоді не зберігає HTML узагалі.
 
 ### 5.5. Internal site metadata
 
@@ -572,7 +580,7 @@ Warmup не очищає generation і не перезаписує valid existin
 - `redis` — підключення до Redis;
 - `object` — Object Cache;
 - `page` — HTML Page Cache;
-- `cloudflare` — zone ID, API token, три opt-in тригери, connection test і ручний purge;
+- `cloudflare` — zone ID, API token, три opt-in тригери, connection test, ручний purge і згенерований вираз Cache Rule для HTML на edge;
 - `warm` — source selection, live progress і verified manual warmup;
 - `status` — live diagnostics, connection test і ручне очищення.
 
@@ -757,7 +765,8 @@ Tag або GitHub Release поточному updater не потрібні: но
 - Hash `page-content-versions` не має TTL і накопичує по одному field для кожного відстеженого post/term resource; global page purge видаляє весь hash, а звичайна точкова інвалідація лише змінює відповідні fields.
 - Cloudflare API token лежить і в WordPress DB, і у generated early config, як і Redis credentials, хоча ранній runtime його не читає. Витік цього файла або БД розкриває токен; scoped token із правом лише Cache Purge для однієї зони обмежує наслідки.
 - Cloudflare purge за URL точний: пагінація архівів, generic-подання й будь-які інші представлення оновленого контенту на edge не очищаються. Повне скидання дає лише purge everything.
-- Плагін не контролює, кому shared cache віддає вже збережену копію. Ключ кешу Cloudflare — метод + хост + URL без cookie, тож анонімна копія, збережена після прогріву, віддається й залогіненим користувачам: запит не доходить до origin, і `page.cache_logged_in` на це не впливає. Єдине виправлення — умова на cookie авторизації у самому Cache Rule (`not http.cookie contains "wordpress_logged_in_"` плюс `wp-postpass_` і `comment_author_`), і тримати її треба всередині наявного правила, бо під один запит може підпадати кілька Cache Rules. Рекомендований Edge TTL — «use cache-control header if present, bypass cache if not»: тоді склад edge-кешу визначає сам плагін, який додає `s-maxage` лише на anonymous HIT.
+- Згенерований вираз порівнює cookie з сирим заголовком `Cookie`, а origin — з іменами, які PHP уже переписав (`.` і пробіл стають `_`). Для cookie з крапкою чи пробілом у назві, описаної патерном у «PHP-формі» (`my_sess*` для `my.session`), edge виявиться м'якшим за origin. Серед cookie за замовчуванням і двох обов'язкових таких немає.
+- Плагін не контролює, кому shared cache віддає вже збережену копію. Ключ кешу Cloudflare — метод + хост + URL без cookie, тож анонімна копія, збережена після прогріву, віддається й залогіненим користувачам: запит не доходить до origin, і `page.cache_logged_in` на це не впливає. Єдине виправлення — умова на cookie у самому Cache Rule, і тримати її треба всередині наявного правила, бо під один запит може підпадати кілька Cache Rules. Готовий вираз під конкретний сайт генерує вкладка `cloudflare` (див. §5.4). Рекомендований Edge TTL — «use cache-control header if present, bypass cache if not»: тоді склад edge-кешу визначає сам плагін, який додає `s-maxage` лише на anonymous HIT.
 - Один flush надсилає щонайбільше 300 URL (10 запитів по 30). Надлишок повідомляється адміністратору окремим warning, але не очищається; після масових операцій на кшталт bulk-edit потрібен ручний purge усієї зони.
 - Purge синхронний у save-запиті: до 10 послідовних HTTP-викликів із 15-секундним timeout на `shutdown`. Недоступний Cloudflare відчутно сповільнює збереження запису.
 - `normalize_urls()` відкидає адреси з іншим хостом, ніж `home_url()`, тому на мультимовних конфігураціях з окремими доменами переклади інвалідуються в Redis, але не на edge.
@@ -788,7 +797,7 @@ Tag або GitHub Release поточному updater не потрібні: но
 - Зміни page cache перевіряти окремо для anonymous/logged-in, GET/HEAD, HIT/MISS/BYPASS, query, cookies, headers, output buffers і races.
 - Зміни object cache перевіряти для L1, Redis, non-persistent groups, DB mirror, force read, NX/XX і Redis outage.
 - Не розширювати opt-in invalidation за межі documented singular і assigned public term archives на generic archives, comments, menus, arbitrary meta або WooCommerce events без прямої вимоги, окремого дизайну й документації. Ніколи не додавати destructive Redis flush.
-- Cloudflare-клієнт лишається вузьким: тільки zone read і `purge_cache` для налаштованої зони. Не додавати account-level виклики, discovery зон, зміну налаштувань зони чи другого CDN-провайдера без окремого дизайну.
+- Cloudflare-клієнт лишається вузьким: тільки zone read і `purge_cache` для налаштованої зони. Не додавати account-level виклики, discovery зон, зміну налаштувань зони чи другого CDN-провайдера без окремого дизайну. Генератор виразу Cache Rule — суто локальний: плагін показує вираз адміністратору, але ніколи не створює й не змінює правило через API.
 - API token ніколи не потрапляє у вивід, notices, логи чи діагностику.
 - Не вважати activation hook migration hook: він не запускається при update. Schema transitions мають іти через versioned `maybe_upgrade()` та tests.
 - Якщо змінено drop-in template path або plugin directory behavior, перевірити GitHub updater normalization.
@@ -802,7 +811,7 @@ Dependency-light checks запускаються напряму через PHP �
 - `tests/response-safety.php` — відсутність `s-maxage` на logged-in HIT, ігнорування відкинутого output-буфера, утримання lock відкритим capture, збереження DB transients при невдалому bump, обробка несеріалізовних значень, `replace()` для mirrored non-persistent групи і per-call семантика `error()`;
 - `tests/admin-notice-routing.php` — маршрутизація повідомлень адміністратору незалежно від автора запиту та обмеження черги;
 - `tests/warmer-discovery.php` — normalized deduplication URL прогріву й наявність межі discovery;
-- `tests/cloudflare.php` — endpoint і bearer-заголовок, батчинг по 30 і межа 300, same-site фільтр URL, мапа помилок API, verify через реальний purge та відсутність токена в повідомленнях;
+- `tests/cloudflare.php` — endpoint і bearer-заголовок, батчинг по 30 і межа 300, same-site фільтр URL, мапа помилок API, verify через реальний purge, відсутність токена в повідомленнях, а також генерація виразу Cache Rule: обов'язкові cookie, wildcard-префікси й звіт про розмиті патерни, відкидання шляхів, що покривають home URL, екранування лапок і бекслешів;
 - `tests/page-capture-post-tracking.php` — payload association лише з enabled frontend-viewable `WP_Post`/`WP_Term`, без помилкового author/user ID;
 - `tests/page-invalidator.php` — post/term hooks, old/new/parent terms, WPML/Polylang translations і fail-open warning;
 - `tests/page-content-invalidation-integration.php` — post/term token init/bump/eviction recovery і reset під час global page bump;
@@ -890,7 +899,7 @@ wp plugin status simple-redis-cache
 Для admin UI та локалізації:
 
 - direct links, порядок `page → cloudflare → warm → status` і активний `aria-current` для всіх шести вкладок;
-- Cloudflare: збереження zone ID/token, retain/replace/clear токена, connection test на валідному та read-only токені, ручний purge, вимкнені кнопки без credentials;
+- Cloudflare: збереження zone ID/token, retain/replace/clear токена, connection test на валідному та read-only токені, ручний purge, вимкнені кнопки без credentials; згенерований вираз Cache Rule містить реальний хост і шляхи сайту, підказка з'являється за вимкненого HTML-кешу або `shared_max_age = 0`, лічильник символів і попередження про розмиті cookie-патерни;
 - `?tab=unknown` і `?tab[]=page` без TypeError повертають Redis-вкладку;
 - Save кожної вкладки не змінює дві інші групи, включно з password retain/replace/clear;
 - `warm` і `status` не містять Settings API form, а live PING не виконується на інших вкладках;

@@ -3,7 +3,7 @@ Contributors: vitaliikaplia
 Tags: redis, object cache, page cache, performance
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.6.0
+Stable tag: 0.7.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -45,9 +45,7 @@ Test Saved Connection performs PING plus an isolated `SET -> GET -> DELETE` roun
 
 Sites using plain/query-string permalinks must enable query-string page caching before URLs such as `?p=`, `?page_id=`, `?cat=`, or `?paged=` can be warmed. Unsafe query parameters still always bypass the page cache. Pagination is estimated from WordPress database counts and the global `posts_per_page`; custom query rules can produce individual failed URLs. Discovery stops after 20000 URLs and reports a warning rather than truncating silently. Counters cover every outcome, while the detailed issue list shows at most the first 100 discovery warnings, cache bypasses, and failures; any remaining issue count is shown separately. When enabled, search results and 404 pages may be cached on demand but have no finite discoverable URL list, so the warmer does not include them.
 
-If you also cache HTML at the Cloudflare edge, add a cookie condition to that cache rule. Cloudflare's cache key is method + host + URL and does not include cookies, so a page stored from an anonymous request is served to logged-in users too — the request never reaches WordPress, and no origin setting, including Cache logged-in users, can change that. Keep the exclusion inside the existing rule rather than adding a separate bypass rule, because several cache rules can match one request:
-
-`(http.host eq "example.com" and not starts_with(http.request.uri.path, "/wp-admin") and not starts_with(http.request.uri.path, "/wp-json") and not starts_with(http.request.uri.path, "/wp-login") and not starts_with(http.request.uri.path, "/wp-cron.php") and not http.cookie contains "wordpress_logged_in_" and not http.cookie contains "wp-postpass_" and not http.cookie contains "comment_author_")`
+If you also cache HTML at the Cloudflare edge, add a cookie condition to that cache rule. The Cloudflare Cache tab shows the exact expression for your site, generated locally — with no Cloudflare API call — from its host, its admin, login, REST and cron paths, and the Excluded request cookies on the HTML Page Cache tab; copy it from there. Each path is excluded as a whole segment, auth and post-password cookies are always included, paths covering the home URL are never added, vague cookie patterns are listed rather than dropped, and the length is checked against Cloudflare's 4000-character limit. Cloudflare's cache key is method + host + URL and does not include cookies, so a page stored from an anonymous request is served to logged-in users too — the request never reaches WordPress, and no origin setting, including Cache logged-in users, can change that. Keep the exclusion inside the existing rule rather than adding a separate bypass rule, because several cache rules can match one request.
 
 Leave Edge TTL on "use cache-control header if present, bypass cache if not". That lets the plugin decide what the edge may store: it sends `s-maxage` only on an anonymous hit, never on a miss, a bypass, or a logged-in request. Purge the zone once after saving the rule so the previously stored anonymous copy goes away.
 
@@ -102,6 +100,10 @@ because another WordPress cache may use it.
 * GitHub update metadata is cached for 12 hours. A failed check is cached for 1 hour, after which a later WordPress update check may retry.
 
 == Changelog ==
+
+= 0.7.0 =
+* The Cloudflare Cache tab now shows the Cache Rule expression this site needs when Cloudflare caches HTML, ready to paste. It is generated from the site's own host, its admin, login, REST and cron paths as WordPress reports them, and the Excluded request cookies from the HTML Page Cache tab, so the edge refuses the same visitors the origin already refuses, apart from cookie patterns too vague to express, which the tab lists. Logged-in and post-password cookies are always included.
+* Each service path is excluded as a whole segment, so a short custom login slug such as `/go` cannot pull `/golf/` out of the edge cache. Paths that would cover the home URL itself are never added, so plain permalinks on a root or subdirectory install cannot switch the rule off for the whole site. Cookie patterns too vague for a free-plan rule are listed instead of silently dropped, the expression length is checked against Cloudflare's limit, and a notice explains when HTML page cache is disabled or the CDN cache lifetime is 0, since Cloudflare then stores no HTML under the recommended Edge TTL.
 
 = 0.6.0 =
 * Added a Cloudflare Cache tab with a zone ID, a scoped API token, a manual Clear Cloudflare cache button, and a connection test that proves the token really holds the Cache Purge permission by performing a real single-URL purge.

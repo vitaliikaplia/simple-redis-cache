@@ -5,7 +5,9 @@
  * The plugin talks to exactly one Cloudflare endpoint family — zone read and
  * zone cache purge — using a scoped API token. There is no account-wide access,
  * no zone discovery, and no provider abstraction: everything here exists so the
- * edge can be cleared when the origin cache is cleared.
+ * edge can be cleared when the origin cache is cleared. The class also builds,
+ * locally and without any API call, the Cache Rule expression an administrator
+ * pastes into Cloudflare when HTML is cached at the edge.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -124,6 +126,98 @@ final class Simple_Redis_Cache_Cloudflare {
 			'zone'   => (string) ( $result['name'] ?? '' ),
 			'status' => (string) ( $result['status'] ?? '' ),
 		);
+	}
+
+	/**
+	 * Cookies that must always keep a visitor off the edge copy, whatever the
+	 * Excluded request cookies list says. The edge cannot vary by session, so even
+	 * with logged-in caching enabled in Redis an authenticated visitor has to go
+	 * to the origin.
+	 */
+	private const RULE_REQUIRED_COOKIES = array( 'wordpress_logged_in_', 'wp-postpass_' );
+
+	/** Shorter literals would match nearly any Cookie header and switch the edge off. */
+	private const RULE_MIN_COOKIE_LITERAL = 3;
+
+	/**
+	 * Build the Cache Rule expression a site needs if Cloudflare caches its HTML.
+	 *
+	 * Purely local: no API call is made. Cloudflare's cache key is method + host +
+	 * URL with no cookies, so a page stored for an anonymous visitor is served to
+	 * everyone holding a session or personalization cookie — and that request never
+	 * reaches WordPress, so nothing at the origin can correct it. The expression
+	 * keeps such visitors out of the rule entirely.
+	 *
+	 * Cookie patterns come from the plugin's own Excluded request cookies, so the
+	 * edge refuses exactly what the origin already refuses. The free plan has no
+	 * regex for cookies, so each pattern becomes a `contains` on its literal part
+	 * before the first wildcard; a pattern too vague to express that way is
+	 * reported back rather than silently dropped.
+	 *
+	 * @param string   $host            Host the rule applies to.
+	 * @param string[] $paths           Raw paths to keep out of the rule (admin, login, REST, cron).
+	 * @param string[] $cookie_patterns Excluded request cookies from the HTML Page Cache tab.
+	 * @param string   $home_path       Path of the home URL; "" or "/" for a site at the domain root.
+	 * @return array{expression:string,skipped:string[]}
+	 */
+	public static function html_cache_rule( string $host, array $paths, array $cookie_patterns, string $home_path = '' ): array {
+		$clauses   = array( 'http.host eq ' . self::rule_string( strtolower( trim( $host ) ) ) );
+		$home_root = rtrim( trim( $home_path ), '/' ) . '/';
+
+		$seen_paths = array();
+		foreach ( $paths as $path ) {
+			$path = rtrim( trim( (string) $path ), '/' );
+			/*
+			 * A path that covers the home URL itself would exclude every page from
+			 * the rule. That is not hypothetical: with plain permalinks REST lives at
+			 * home_url('?rest_route=/'), whose path is "/" on a root install and
+			 * "/blog/" on a subdirectory one. Those requests carry ?rest_route=,
+			 * which the origin already refuses to cache, so nothing is lost.
+			 */
+			if ( '' === $path || str_starts_with( $home_root, $path . '/' ) || isset( $seen_paths[ $path ] ) ) {
+				continue;
+			}
+			$seen_paths[ $path ] = true;
+			/*
+			 * Match the path as a whole segment: the path itself or anything below it.
+			 * A bare starts_with("/go") would also pull /golf/ and /google-ads/ out of
+			 * the edge cache, which matters once a hide-login plugin moves the login
+			 * page to a short slug.
+			 */
+			$quoted    = self::rule_string( $path );
+			$clauses[] = 'not (http.request.uri.path eq ' . $quoted . ' or starts_with(http.request.uri.path, ' . self::rule_string( $path . '/' ) . '))';
+		}
+
+		$cookies = array();
+		$skipped = array();
+		foreach ( array_merge( self::RULE_REQUIRED_COOKIES, $cookie_patterns ) as $pattern ) {
+			$pattern = trim( (string) $pattern );
+			if ( '' === $pattern ) {
+				continue;
+			}
+
+			$literal = trim( (string) preg_split( '/[*?]/', $pattern, 2 )[0] );
+			if ( strlen( $literal ) < self::RULE_MIN_COOKIE_LITERAL ) {
+				$skipped[] = $pattern;
+				continue;
+			}
+
+			$cookies[ $literal ] = true;
+		}
+
+		foreach ( array_keys( $cookies ) as $literal ) {
+			$clauses[] = 'not http.cookie contains ' . self::rule_string( $literal );
+		}
+
+		return array(
+			'expression' => '(' . implode( ' and ', $clauses ) . ')',
+			'skipped'    => array_values( array_unique( $skipped ) ),
+		);
+	}
+
+	/** Quote a value as a Cloudflare rules-language string literal. */
+	private static function rule_string( string $value ): string {
+		return '"' . str_replace( array( '\\', '"' ), array( '\\\\', '\\"' ), $value ) . '"';
 	}
 
 	/**

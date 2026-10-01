@@ -22,6 +22,9 @@ final class Simple_Redis_Cache_Admin {
 	private const SETTINGS_TAB = '_settings_tab';
 	private const FORM_TABS    = array( 'redis', 'object', 'page', 'cloudflare' );
 
+	/** Expression length the Cloudflare rule editor accepts. */
+	private const CLOUDFLARE_EXPRESSION_LIMIT = 4000;
+
 	/** @var array<string, mixed>|null Request-local config used while rendering fields. */
 	private static ?array $render_config = null;
 
@@ -285,6 +288,7 @@ final class Simple_Redis_Cache_Admin {
 				</form>
 				<?php if ( 'cloudflare' === $tab ) : ?>
 					<?php self::render_cloudflare_actions(); ?>
+					<?php self::render_cloudflare_rule(); ?>
 				<?php endif; ?>
 			<?php endif; ?>
 		</div>
@@ -696,6 +700,101 @@ final class Simple_Redis_Cache_Admin {
 		</div>
 		<p class="description"><?php esc_html_e( 'Clear Cloudflare cache purges the entire zone and does not touch this site\'s Redis caches.', 'simple-redis-cache' ); ?></p>
 		<?php
+	}
+
+	/**
+	 * Show the Cache Rule expression this site needs when Cloudflare caches HTML.
+	 *
+	 * Generated rather than copied from documentation, so it carries the real host,
+	 * the real admin/login/REST/cron paths (subdirectory installs and renamed login
+	 * pages included) and the cookies this site already excludes at the origin.
+	 */
+	private static function render_cloudflare_rule(): void {
+		$config = Simple_Redis_Cache_Config::get();
+		$page   = (array) ( $config['page'] ?? array() );
+		$host   = (string) ( $config['site']['host'] ?? '' );
+		if ( '' === $host ) {
+			$host = strtolower( (string) wp_parse_url( home_url( '/' ), PHP_URL_HOST ) );
+		}
+
+		$rule   = Simple_Redis_Cache_Cloudflare::html_cache_rule(
+			$host,
+			self::cloudflare_rule_paths(),
+			(array) ( $page['excluded_cookies'] ?? array() ),
+			(string) wp_parse_url( home_url( '/' ), PHP_URL_PATH )
+		);
+		$length = function_exists( 'mb_strlen' ) ? mb_strlen( $rule['expression'] ) : strlen( $rule['expression'] );
+		?>
+		<h2><?php esc_html_e( 'Cache Rule for HTML on Cloudflare', 'simple-redis-cache' ); ?></h2>
+		<p><?php esc_html_e( 'Only needed if Cloudflare also caches your HTML pages. Cloudflare builds its cache key from the method, host and URL — cookies are not part of it — so a page stored for an anonymous visitor is served to logged-in users too. That request never reaches WordPress, so no setting in this plugin, including Cache logged-in users, can prevent it. The expression below keeps such visitors out of the rule.', 'simple-redis-cache' ); ?></p>
+
+		<?php if ( empty( $page['enabled'] ) || (int) ( $page['shared_max_age'] ?? 0 ) < 1 ) : ?>
+			<div class="notice notice-info inline"><p>
+				<?php
+				echo empty( $page['enabled'] )
+					? esc_html__( 'HTML page cache is disabled, so this plugin never marks a page as storable for Cloudflare. With the Edge TTL recommended below, Cloudflare will not cache HTML at all.', 'simple-redis-cache' )
+					: esc_html__( 'The CDN cache lifetime on the HTML Page Cache tab is 0, so this plugin never marks a page as storable for Cloudflare. With the Edge TTL recommended below, Cloudflare will not cache HTML until you set a lifetime.', 'simple-redis-cache' );
+				?>
+			</p></div>
+		<?php endif; ?>
+
+		<ol>
+			<li><?php esc_html_e( 'In Cloudflare, open Cache Rules, edit the rule that caches HTML or create one, choose Edit expression and paste the expression below. Keep it inside that one rule instead of adding a separate bypass rule: several Cache Rules can match the same request.', 'simple-redis-cache' ); ?></li>
+			<li><?php esc_html_e( 'Set Cache eligibility to Eligible for cache and Edge TTL to "Use cache-control header if present, bypass cache if not". This lets the plugin decide what the edge may store: it sends s-maxage only on an anonymous cache hit, never on a miss, a bypass or a logged-in request.', 'simple-redis-cache' ); ?></li>
+			<li><?php esc_html_e( 'Save the rule, then purge the zone once with Clear Cloudflare cache so the copy stored before the change is gone.', 'simple-redis-cache' ); ?></li>
+		</ol>
+
+		<textarea class="large-text code" rows="7" readonly aria-label="<?php esc_attr_e( 'Cloudflare Cache Rule expression', 'simple-redis-cache' ); ?>"><?php echo esc_textarea( $rule['expression'] ); ?></textarea>
+		<p class="description">
+			<?php
+			echo esc_html(
+				sprintf(
+					/* translators: 1: expression length, 2: Cloudflare's expression limit. */
+					__( '%1$d / %2$d characters.', 'simple-redis-cache' ),
+					$length,
+					self::CLOUDFLARE_EXPRESSION_LIMIT
+				)
+			);
+			?>
+			<?php esc_html_e( 'Built from this site\'s address, its admin, login, REST and cron paths, and the Excluded request cookies on the HTML Page Cache tab. Change those settings and this expression changes with them.', 'simple-redis-cache' ); ?>
+		</p>
+
+		<?php if ( $length > self::CLOUDFLARE_EXPRESSION_LIMIT ) : ?>
+			<div class="notice notice-error inline"><p><?php esc_html_e( 'This expression is longer than Cloudflare accepts. Shorten the Excluded request cookies list on the HTML Page Cache tab.', 'simple-redis-cache' ); ?></p></div>
+		<?php endif; ?>
+
+		<?php if ( ! empty( $rule['skipped'] ) ) : ?>
+			<div class="notice notice-warning inline"><p>
+				<?php
+				echo esc_html(
+					sprintf(
+						/* translators: %s: comma-separated cookie patterns. */
+						__( 'These cookie patterns are too vague to express in a Cloudflare rule on the free plan and were left out: %s. Visitors carrying them may still receive a page cached for anonymous visitors.', 'simple-redis-cache' ),
+						implode( ', ', $rule['skipped'] )
+					)
+				);
+				?>
+			</p></div>
+		<?php endif; ?>
+
+		<p class="description"><?php esc_html_e( 'To check: a request made while logged in should return cf-cache-status: BYPASS or DYNAMIC, and an anonymous one HIT.', 'simple-redis-cache' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Paths that must never be served from the edge, as WordPress itself reports
+	 * them. Any of them that covers the home URL — REST under plain permalinks, for
+	 * one — is dropped by the rule builder rather than excluding the whole site.
+	 *
+	 * @return string[]
+	 */
+	private static function cloudflare_rule_paths(): array {
+		return array(
+			(string) wp_parse_url( admin_url(), PHP_URL_PATH ),
+			(string) wp_parse_url( wp_login_url(), PHP_URL_PATH ),
+			(string) wp_parse_url( rest_url(), PHP_URL_PATH ),
+			(string) wp_parse_url( site_url( 'wp-cron.php' ), PHP_URL_PATH ),
+		);
 	}
 
 	public static function handle_cloudflare_test(): void {

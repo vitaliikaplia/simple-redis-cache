@@ -100,7 +100,7 @@ final class Simple_Redis_Cache_GitHub_Updater {
 			'download_link' => $remote_data['package'] ?? $this->get_package_url(),
 			'sections'      => array(
 				'description' => '<p>' . esc_html__( 'Redis-only persistent object caching and full-page HTML caching for a single-site WordPress installation.', 'simple-redis-cache' ) . '</p>',
-				'changelog'   => '<p>' . esc_html__( 'Version 0.6.0 adds a Cloudflare Cache tab: a scoped API token, a manual zone purge, a connection test that proves the Cache Purge permission with a real purge, and optional automatic purging with Clear all cache, with Clear page cache, and when content is updated.', 'simple-redis-cache' ) . '</p>',
+				'changelog'   => '<p>' . esc_html__( 'Version 0.7.0 shows, on the Cloudflare Cache tab, the Cache Rule expression this site needs when Cloudflare caches HTML: generated from the site address, its service paths and its excluded cookies, so logged-in visitors are never served a page cached for anonymous ones.', 'simple-redis-cache' ) . '</p>',
 			),
 		);
 	}
