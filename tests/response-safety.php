@@ -348,6 +348,40 @@ $broken = $new_wrapper( 'Unable to connect to Redis.', 'Unable to connect to Red
 $broken->generation( 'object' );
 $assert( 'Unable to connect to Redis.' === $broken->error(), 'A failed connection stopped being reported on later calls.' );
 
+/* -------------------------------------------------------------------------
+ * 7. The early page-cache loader must leave the site's own globals alone.
+ *
+ * wp-settings.php includes advanced-cache.php at global scope, after
+ * wp-config.php has run, so an unprefixed variable in the loader overwrites
+ * and then unsets whatever the site defined under that name.
+ *
+ * This runs in a fresh PHP process: section 2 declared a stand-in loader class
+ * here, which would make the real one skip its class body. The child runs at
+ * global scope like wp-settings.php, loads the real class, and with no
+ * generated config next to the plugin, run() returns at its disabled check.
+ * ---------------------------------------------------------------------- */
+
+$child = '
+	define( "ABSPATH", ' . var_export( $plugin_dir . '/', true ) . ' );
+	define( "WP_CONTENT_DIR", ' . var_export( $plugin_dir, true ) . ' );
+	$config = "defined by wp-config.php";
+	$before = array_keys( get_defined_vars() );
+	require ' . var_export( $plugin_dir . '/dropins/advanced-cache-loader.php', true ) . ';
+	echo json_encode(
+		array(
+			"config" => $config ?? null,
+			"leaked" => array_values( array_diff( array_keys( get_defined_vars() ), $before, array( "before", "GLOBALS", "_SERVER", "_ENV", "_REQUEST" ) ) ),
+			"real"   => method_exists( "Simple_Redis_Cache_Advanced_Cache_Loader", "run" ),
+		)
+	);
+';
+$output = (string) shell_exec( escapeshellarg( PHP_BINARY ) . ' -d display_errors=1 -d error_reporting=-1 -r ' . escapeshellarg( $child ) . ' 2>&1' );
+$result = json_decode( $output, true );
+$assert( is_array( $result ), 'The global-scope loader check produced output other than its result (a warning?): ' . trim( $output ) );
+$assert( true === ( $result['real'] ?? null ), 'The global-scope loader check did not load the real loader class.' );
+$assert( 'defined by wp-config.php' === ( $result['config'] ?? null ), 'The advanced-cache loader overwrote or unset a global $config the site had defined.' );
+$assert( array() === ( $result['leaked'] ?? null ), 'The advanced-cache loader left variables in the global scope: ' . implode( ', ', (array) ( $result['leaked'] ?? array() ) ) );
+
 if ( ! empty( $failures ) ) {
 	foreach ( $failures as $failure ) {
 		fwrite( STDERR, 'FAIL: ' . $failure . "\n" );

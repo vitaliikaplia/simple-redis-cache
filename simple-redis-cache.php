@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Simple Redis Cache
  * Description: Redis-only object cache and full-page HTML cache for WordPress.
- * Version: 0.7.0
+ * Version: 0.7.1
  * Author: Vitalii Kaplia
  * Author URI: https://kaplia.pro/
  * Update URI: https://github.com/vitaliikaplia/simple-redis-cache
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'SIMPLE_REDIS_CACHE_VERSION', '0.7.0' );
+define( 'SIMPLE_REDIS_CACHE_VERSION', '0.7.1' );
 define( 'SIMPLE_REDIS_CACHE_FILE', __FILE__ );
 define( 'SIMPLE_REDIS_CACHE_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SIMPLE_REDIS_CACHE_BASENAME', plugin_basename( __FILE__ ) );

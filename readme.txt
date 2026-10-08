@@ -3,7 +3,7 @@ Contributors: vitaliikaplia
 Tags: redis, object cache, page cache, performance
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.7.0
+Stable tag: 0.7.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -100,6 +100,11 @@ because another WordPress cache may use it.
 * GitHub update metadata is cached for 12 hours. A failed check is cached for 1 hour, after which a later WordPress update check may retry.
 
 == Changelog ==
+
+= 0.7.1 =
+* The plugin now works on PHP 8.1, its declared minimum. Two return types were declared as `true|WP_Error`. PHP 8.1 has no `true` type in any position; only PHP 8.2 and newer accept it, so every version since 0.2.0 failed with a fatal error on PHP 8.1 as soon as WordPress loaded it and could not be activated there. Both are now declared as `bool|WP_Error`; behaviour on PHP 8.2 and newer is unchanged.
+* The early page-cache loader no longer overwrites and removes a global `$config` variable. WordPress includes `advanced-cache.php` at global scope after `wp-config.php` has run, so a site that defined its own `$config` there lost it on every request while HTML page cache was enabled. All of the loader's variables are now prefixed, as the object-cache loader's already were.
+* A new dependency-light test, `tests/php-compat.php`, scans the plugin's own source for the PHP 8.2/8.3 type and constant syntax of the kind that broke 0.2.0–0.7.0 and for a curated list of newer builtins, and checks that the plugin header, this readme and the update responses all still declare PHP 8.1.
 
 = 0.7.0 =
 * The Cloudflare Cache tab now shows the Cache Rule expression this site needs when Cloudflare caches HTML, ready to paste. It is generated from the site's own host, its admin, login, REST and cron paths as WordPress reports them, and the Excluded request cookies from the HTML Page Cache tab, so the edge refuses the same visitors the origin already refuses, apart from cookie patterns too vague to express, which the tab lists. Logged-in and post-password cookies are always included.

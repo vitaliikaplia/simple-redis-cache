@@ -100,7 +100,7 @@ final class Simple_Redis_Cache_GitHub_Updater {
 			'download_link' => $remote_data['package'] ?? $this->get_package_url(),
 			'sections'      => array(
 				'description' => '<p>' . esc_html__( 'Redis-only persistent object caching and full-page HTML caching for a single-site WordPress installation.', 'simple-redis-cache' ) . '</p>',
-				'changelog'   => '<p>' . esc_html__( 'Version 0.7.0 shows, on the Cloudflare Cache tab, the Cache Rule expression this site needs when Cloudflare caches HTML: generated from the site address, its service paths and its excluded cookies, so logged-in visitors are never served a page cached for anonymous ones.', 'simple-redis-cache' ) . '</p>',
+				'changelog'   => '<p>' . esc_html__( 'Version 0.7.1 makes the plugin work on PHP 8.1, its declared minimum: two return types used syntax that only PHP 8.2 and newer accept, so on PHP 8.1 the plugin failed with a fatal error as soon as WordPress loaded it. The early page-cache loader also no longer overwrites a global $config variable defined in wp-config.php.', 'simple-redis-cache' ) . '</p>',
 			),
 		);
 	}

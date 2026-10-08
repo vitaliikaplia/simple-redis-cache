@@ -65,10 +65,7 @@ $assert = static function ( bool $condition, string $message ) use ( &$checks ):
 
 /** @return mixed */
 $invoke = static function ( object $instance, string $method, mixed ...$arguments ) use ( $reflection ): mixed {
-	$reflected_method = $reflection->getMethod( $method );
-	$reflected_method->setAccessible( true );
-
-	return $reflected_method->invoke( $instance, ...$arguments );
+	return $reflection->getMethod( $method )->invoke( $instance, ...$arguments );
 };
 
 $assert(

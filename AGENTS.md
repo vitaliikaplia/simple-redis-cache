@@ -9,12 +9,12 @@ Simple Redis Cache — навмисно вузький WordPress-плагін і
 1. persistent WordPress Object Cache API через `wp-content/object-cache.php`;
 2. full-page HTML cache через `wp-content/advanced-cache.php`.
 
-Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.7.0`; schema конфігурації — `3`; page payload — `3`.
+Поточний узгоджений release baseline: версія плагіна, `Stable tag`, gettext metadata та текст changelog у стандартному WordPress plugin-details modal — `0.7.1`; schema конфігурації — `3`; page payload — `3`.
 
 Незмінні межі поточного продукту, якщо задача прямо не вимагає змінити scope:
 
 - тільки single-site WordPress;
-- WordPress 6.5+ і PHP 8.1+;
+- WordPress 6.5+ і PHP 8.1+; PHP 8.1 — реальний мінімум: кожен файл має компілюватися й працювати на 8.1 (правила — у §17);
 - тільки розширення PhpRedis;
 - один standalone Redis server;
 - Redis TCP, TLS або Unix socket;
@@ -735,7 +735,7 @@ Release checklist:
 1. однаково підняти header `Version`, `SIMPLE_REDIS_CACHE_VERSION` і release baseline у розділі 1 цього файла;
 2. оновити `Stable tag`, changelog у `readme.txt` і hard-coded changelog поточної версії у стандартному WordPress plugin-details modal;
 3. оновити POT/PO `Project-Id-Version`, скомпілювати MO та перевірити обидві локалі;
-4. за зміни requirements синхронізувати main header, readmes та hard-coded updater fields;
+4. за зміни requirements синхронізувати main header, readmes та hard-coded updater fields (узгодженість `Requires PHP` перевіряє `tests/php-compat.php`; новий мінімум PHP потребує й оновлення його правил);
 5. перевірити ZIP root behavior;
 6. закомітити й запушити coherent tree у `master`;
 7. перевірити raw main file, branch package URL і WordPress update response.
@@ -782,10 +782,13 @@ Tag або GitHub Release поточному updater не потрібні: но
 - `shared_max_age` навмисно не входить у `$page_keys` `invalidate_changed_settings()`: зміна або обнулення значення нічого не інвалідує й не відкликає копії, які shared cache уже зберіг зі старим `s-maxage`.
 - Інвалідатор реєструє лише `post_updated` і `set_object_terms`, тому поза покриттям лишаються остаточне видалення поста, перейменування/злиття/видалення терміна, будь-яке `wp_remove_object_terms()` і публікація за розкладом через `wp_publish_post()`; їхній HTML лишається валідним до TTL чи manual page purge.
 - `wp_cache_flush()` і `wp_cache_flush_group()` за ввімкненого DB mirror видаляють усі стандартні transients із `wp_options`, включно з чужими, і робить це будь-який виклик — наприклад WP-CLI `wp cache flush` — без окремого підтвердження, якого вимагають кнопки в адмінці. Рядки зберігаються, лише коли generation bump не вдався.
+- Розробка й тести йдуть на інтерпретаторах, новіших за заявлений мінімум, а вони мовчки приймають синтаксис, який PHP 8.1 відкидає під час компіляції. Так тип `true` пролежав у коді з 0.2.0 по 0.7.0, і всі ці версії на PHP 8.1 падали fatal error уже на `require_once`. `tests/php-compat.php` ловить тип `true`, самостійні `false`/`null`, DNF, `readonly class`, константи в traits, типізовані константи й курований список новіших вбудованих функцій і класів. Решту синтаксису 8.3 (динамічний доступ до констант класу, довільні ініціалізатори static-змінних) і весь синтаксис 8.4/8.5 він не бачить: це евристика, і повну гарантію дає лише лінт і прогін тестів на самому PHP 8.1 (або лінт на 8.0, див. §18).
 
 ## 17. Правила внесення змін
 
 - Ранні файли не повинні викликати WordPress APIs, які ще не гарантовано завантажені. Перевіряйте `function_exists`/`defined` або залишайте логіку dependency-free.
+- `wp-settings.php` підключає `advanced-cache.php`, а з ним і `advanced-cache-loader.php`, у глобальній області — уже після `wp-config.php`. Головний файл плагіна теж підключається глобально. Тому кожна змінна верхнього рівня в цих файлах має префікс `$simple_redis_cache_` і знімається через `unset()`: незапрефіксована `$config` перезаписала б і видалила однойменну змінну сайту. До 0.7.1 саме так і було.
+- Увесь код, включно з тестами, має компілюватися й працювати на PHP 8.1. Заборонено: тип `true` і самостійні `false`/`null` (8.2), DNF-типи (8.2), `readonly class` (8.2), константи в traits (8.2), типізовані константи класів (8.3), будь-який синтаксис 8.4/8.5 і вбудовані функції чи класи, новіші за 8.1 (`json_validate`, `array_find`, `mb_trim`, `array_first`, `Random\Randomizer` тощо). Якщо метод повертає «`true` або `WP_Error`», тип оголошується як `bool|WP_Error`, а точний контракт пишеться в `@return true|WP_Error`. Одна така декларація в будь-якому файлі, який підключає `simple-redis-cache.php` чи drop-in, — це fatal error на кожному запиті, а не лише в одній функції.
 - Не переносити secret/config читання в constants. Redis settings залишаються в admin option/generated config.
 - Не міняти key schema або payload version без migration/namespace versioning та purge plan.
 - Кожен новий `page.*`/`object.*` ключ свідомо класифікувати в `invalidate_changed_settings()`: або додати у відповідний список, або задокументувати виняток. Ключі, що змінюють лише response headers і не входять у payload (`shared_max_age`), навмисно лишаються поза `$page_keys`.
@@ -808,7 +811,7 @@ Dependency-light checks запускаються напряму через PHP �
 
 - `tests/config-migration.php` — schema upgrade, preservation, no downgrade;
 - `tests/page-request.php` — cacheable path і encoded-control bypass;
-- `tests/response-safety.php` — відсутність `s-maxage` на logged-in HIT, ігнорування відкинутого output-буфера, утримання lock відкритим capture, збереження DB transients при невдалому bump, обробка несеріалізовних значень, `replace()` для mirrored non-persistent групи і per-call семантика `error()`;
+- `tests/response-safety.php` — відсутність `s-maxage` на logged-in HIT, ігнорування відкинутого output-буфера, утримання lock відкритим capture, збереження DB transients при невдалому bump, обробка несеріалізовних значень, `replace()` для mirrored non-persistent групи, per-call семантика `error()` і те, що ранній page-cache loader не чіпає глобальних змінних сайту та прибирає власні;
 - `tests/admin-notice-routing.php` — маршрутизація повідомлень адміністратору незалежно від автора запиту та обмеження черги;
 - `tests/warmer-discovery.php` — normalized deduplication URL прогріву й наявність межі discovery;
 - `tests/cloudflare.php` — endpoint і bearer-заголовок, батчинг по 30 і межа 300, same-site фільтр URL, мапа помилок API, verify через реальний purge, відсутність токена в повідомленнях, а також генерація виразу Cache Rule: обов'язкові cookie, wildcard-префікси й звіт про розмиті патерни, відкидання шляхів, що покривають home URL, екранування лапок і бекслешів;
@@ -818,7 +821,8 @@ Dependency-light checks запускаються напряму через PHP �
 - `tests/github-updater.php` — newer/current/invalid branch version, update response, cached branch metadata та archive-root normalization;
 - `tests/generation-integration.php` — object/page/group random initialization та atomic bump на Redis;
 - `tests/settings-invalidation-integration.php` — точкова object/page invalidation, non-semantic changes і old/new storage targets.
-- `tests/settings-recovery-integration.php` — failed generation bump, fail-safe disabled runtime/drop-in, successful recovery після ремонту Redis metadata та concurrent Save під час failure path.
+- `tests/settings-recovery-integration.php` — failed generation bump, fail-safe disabled runtime/drop-in, successful recovery після ремонту Redis metadata та concurrent Save під час failure path;
+- `tests/php-compat.php` — tokenizer-перевірка всього власного PHP-коду на синтаксис 8.2+ (тип `true`, самостійні `false`/`null`, DNF, `readonly class`, константи в traits, типізовані константи) і на курований список новіших вбудованих функцій і класів. Сканер спершу перевіряє себе на свідомо поганих фрагментах і на коректному для 8.1 коді. Тест також звіряє `Requires PHP: 8.1` у заголовку, `readme.txt` і обох відповідях updater-а.
 
 Redis scripts використовують унікальний random salt або fallback prefix, видаляють лише власні exact meta keys у `finally` та друкують `SKIP`, якщо PhpRedis/Redis недоступні. Вони ніколи не виконують `FLUSH*` або `KEYS`.
 
@@ -826,6 +830,12 @@ Redis scripts використовують унікальний random salt аб
 
 ```bash
 find . -name '*.php' -type f -print0 | xargs -0 -n1 php -l
+# Те саме найстаршим доступним інтерпретатором: PHP 8.1, а якщо його немає — PHP 8.0.
+# 8.0 відкидає весь синтаксис 8.2+, тож допустимі там лише помилки на можливостях
+# самого 8.1 (enum, readonly-властивості, never, first-class callable, new в ініціалізаторах).
+# find -exec не зупиняється на першій помилці, на відміну від xargs (exit 255 його обриває).
+find . -name '*.php' -type f -exec php8.1 -l {} \; | grep -v '^No syntax errors'
+php tests/php-compat.php
 node --check assets/js/admin-warm-cache.js
 php tests/config-migration.php
 php tests/page-request.php

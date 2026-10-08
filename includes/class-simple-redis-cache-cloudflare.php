@@ -51,9 +51,12 @@ final class Simple_Redis_Cache_Cloudflare {
 	/**
 	 * Purge the entire zone.
 	 *
+	 * Declared as bool because the `true` type needs PHP 8.2.
+	 *
 	 * @param array<string, mixed>|null $config
+	 * @return true|WP_Error
 	 */
-	public static function purge_everything( ?array $config = null ): true|WP_Error {
+	public static function purge_everything( ?array $config = null ): bool|WP_Error {
 		$response = self::request( 'POST', '/purge_cache', array( 'purge_everything' => true ), $config );
 
 		return is_wp_error( $response ) ? $response : true;

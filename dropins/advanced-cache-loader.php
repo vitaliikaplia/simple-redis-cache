@@ -937,11 +937,13 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 	}
 }
 
+// wp-settings.php includes this file at global scope, so every variable here is
+// prefixed: a bare $config would overwrite and then unset one from wp-config.php.
 try {
-	$config = Simple_Redis_Cache_Early_Config::load();
-	Simple_Redis_Cache_Advanced_Cache_Loader::run( $config, $simple_redis_cache_dir );
+	$simple_redis_cache_early_config = Simple_Redis_Cache_Early_Config::load();
+	Simple_Redis_Cache_Advanced_Cache_Loader::run( $simple_redis_cache_early_config, $simple_redis_cache_dir );
 } catch ( Throwable ) {
 	// A cache failure must never prevent WordPress from serving the request.
 }
 
-unset( $config, $simple_redis_cache_dir );
+unset( $simple_redis_cache_early_config, $simple_redis_cache_dir );

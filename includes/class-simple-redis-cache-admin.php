@@ -902,7 +902,8 @@ final class Simple_Redis_Cache_Admin {
 		return $result;
 	}
 
-	private static function redis_round_trip( Simple_Redis_Cache_Redis $redis, array $config ): true|WP_Error {
+	/** @return true|WP_Error Declared as bool because the `true` type needs PHP 8.2. */
+	private static function redis_round_trip( Simple_Redis_Cache_Redis $redis, array $config ): bool|WP_Error {
 		$client = $redis->client();
 		if ( null === $client ) {
 			return new WP_Error( 'src_redis_diagnostic_unavailable', $redis->display_error() ?: __( 'Redis is unavailable.', 'simple-redis-cache' ) );

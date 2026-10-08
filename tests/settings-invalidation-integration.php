@@ -51,7 +51,6 @@ $assert     = static function ( bool $condition, string $message ): void {
 };
 
 $method = new ReflectionMethod( Simple_Redis_Cache_Plugin::class, 'invalidate_changed_settings' );
-$method->setAccessible( true );
 
 try {
 	$probe->del( $keys );
