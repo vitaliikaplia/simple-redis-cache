@@ -19,10 +19,28 @@ final class Simple_Redis_Cache_Redis {
 	private ?string $connection_error = null;
 	private bool $attempted = false;
 
+	/**
+	 * Whether this instance honours and trips the cross-request circuit breaker.
+	 * Only the frontend drop-ins opt in; admin and diagnostics always connect.
+	 */
+	private bool $use_breaker = false;
+
+	/** Set once this instance has tripped the breaker, or found it already open. */
+	private bool $breaker_tripped = false;
+
+	/** Modification time this instance gave an expired breaker before probing Redis. */
+	private ?int $probe_stamp = null;
+
+	/** Seconds after a failure during which breaker-aware requests skip Redis. */
+	private const BREAKER_SECONDS = 15;
+
 	/** @param array<string, mixed>|null $config */
-	public function __construct( ?array $config = null ) {
-		$this->all_config = $config ?? Simple_Redis_Cache_Early_Config::load();
-		$this->config     = (array) ( $this->all_config['redis'] ?? array() );
+	public function __construct( ?array $config = null, bool $use_breaker = false ) {
+		$this->all_config  = $config ?? Simple_Redis_Cache_Early_Config::load();
+		$this->config      = (array) ( $this->all_config['redis'] ?? array() );
+		// WP-CLI runs one long process an operator is watching: it neither waits
+		// out the breaker nor locks the site's requests out of Redis.
+		$this->use_breaker = $use_breaker && ! ( defined( 'WP_CLI' ) && WP_CLI );
 	}
 
 	public function is_available(): bool {
@@ -43,10 +61,35 @@ final class Simple_Redis_Cache_Redis {
 		}
 
 		try {
+			$timeout      = (float) ( $this->config['timeout'] ?? 1.0 );
+			$read_timeout = (float) ( $this->config['read_timeout'] ?? 1.0 );
+
+			/*
+			 * A hung or refused Redis costs every request up to the connect timeout.
+			 * After a recent failure, breaker-aware callers fail fast instead and run
+			 * uncached until the breaker expires; the next attempt then probes Redis.
+			 */
+			if ( $this->use_breaker ) {
+				$breaker_age = self::breaker_age();
+				if ( null !== $breaker_age && self::breaker_age_open( $breaker_age ) ) {
+					$this->breaker_tripped  = true;
+					$this->error            = 'Redis was skipped after a recent connection failure.';
+					$this->connection_error = $this->error;
+					return false;
+				}
+
+				/*
+				 * An expired breaker makes this request the probe. Re-arm it for about
+				 * as long as the probe may take, so the requests arriving meanwhile
+				 * keep skipping instead of all waiting on the same timeout.
+				 */
+				if ( null !== $breaker_age ) {
+					$this->probe_stamp = self::rearm_breaker( (int) ceil( $timeout + $read_timeout ) + 1 );
+				}
+			}
+
 			$redis       = new Redis();
 			$scheme      = (string) ( $this->config['scheme'] ?? 'tcp' );
-			$timeout     = (float) ( $this->config['timeout'] ?? 1.0 );
-			$read_timeout = (float) ( $this->config['read_timeout'] ?? 1.0 );
 			$retry       = max( 0, (int) ( $this->config['retry_interval'] ?? 100 ) );
 			$persistent  = ! empty( $this->config['persistent'] );
 			$host        = (string) ( $this->config['host'] ?? '127.0.0.1' );
@@ -130,12 +173,158 @@ final class Simple_Redis_Cache_Redis {
 				throw new RuntimeException( 'Unable to select the Redis database.' );
 			}
 
+			/*
+			 * A stopped server can still complete the TCP handshake, so a probe
+			 * succeeds only after a full round trip. Then the breaker it re-armed
+			 * stops blocking the requests that follow.
+			 */
+			if ( null !== $this->probe_stamp ) {
+				$pong = $redis->ping();
+				if ( true !== $pong && 'PONG' !== $pong && '+PONG' !== $pong ) {
+					throw new RuntimeException( 'Unable to connect to Redis.' );
+				}
+				self::close_breaker( $this->probe_stamp );
+			}
+
 			$this->client = $redis;
 			return true;
 		} catch ( Throwable $throwable ) {
 			$this->error            = $throwable->getMessage();
 			$this->connection_error = $this->error;
 			$this->client           = null;
+			$this->open_breaker();
+			return false;
+		}
+	}
+
+	/**
+	 * Report a runtime Redis failure. Only a failure of the connection itself (a
+	 * read timeout, a lost connection) lets breaker-aware requests skip Redis
+	 * for a short while: an error reply such as OOM or READONLY proves that
+	 * Redis answered, so it fails the calling request only. A failed connect()
+	 * trips the breaker by itself.
+	 *
+	 * A no-op without the breaker, and when this instance never reached Redis
+	 * because the breaker was already open, so skipped requests can never keep
+	 * a recovered server locked out.
+	 */
+	public function trip_breaker(): void {
+		if ( ! $this->use_breaker || $this->breaker_tripped ) {
+			return;
+		}
+
+		if ( null !== $this->client && $this->answered_with_error() ) {
+			return;
+		}
+
+		$this->open_breaker();
+	}
+
+	/**
+	 * PhpRedis keeps the last error reply on the client, while a socket timeout
+	 * or a lost connection leaves none. begin_operation() clears it, so an
+	 * earlier reply cannot make a later socket failure look answered.
+	 */
+	private function answered_with_error(): bool {
+		try {
+			$last_error = $this->client?->getLastError();
+			return is_string( $last_error ) && '' !== $last_error;
+		} catch ( Throwable ) {
+			return false;
+		}
+	}
+
+	private function open_breaker(): void {
+		if ( ! $this->use_breaker || $this->breaker_tripped ) {
+			return;
+		}
+
+		$this->breaker_tripped = true;
+		self::write_marker( self::breaker_path() );
+	}
+
+	/**
+	 * Marker whose modification time records the last tripped failure. It lives
+	 * outside Redis on purpose and is read before WordPress, plugins, or the
+	 * database are loaded.
+	 */
+	public static function breaker_path(): string {
+		return WP_CONTENT_DIR . '/simple-redis-cache-breaker';
+	}
+
+	/**
+	 * Seconds since the breaker was last tripped, from one stat of its marker.
+	 * Null when there is no marker, or it cannot be read: the breaker is closed.
+	 */
+	private static function breaker_age(): ?int {
+		try {
+			$path = self::breaker_path();
+			clearstatcache( true, $path );
+			if ( ! is_file( $path ) ) {
+				return null;
+			}
+
+			$tripped_at = @filemtime( $path );
+			return false === $tripped_at ? null : time() - $tripped_at;
+		} catch ( Throwable ) {
+			return null;
+		}
+	}
+
+	private static function breaker_age_open( int $age ): bool {
+		// A marker from the future (clock change) must not hold Redis off forever.
+		return $age < self::BREAKER_SECONDS && $age > -self::BREAKER_SECONDS;
+	}
+
+	/**
+	 * Replace the breaker marker with one that stays open for the next $seconds
+	 * only. Returns the modification time it now has, or null when it could not
+	 * be written. Like a trip, this needs a writable directory: a marker that can
+	 * be touched but never removed must not keep every expiry re-armed.
+	 */
+	private static function rearm_breaker( int $seconds ): ?int {
+		$stamp = time() - self::BREAKER_SECONDS + max( 1, min( $seconds, self::BREAKER_SECONDS ) );
+		return self::write_marker( self::breaker_path(), $stamp ) ? $stamp : null;
+	}
+
+	/**
+	 * Remove the marker a successful probe re-armed. A marker that changed since
+	 * then belongs to a newer failure and stays.
+	 */
+	private static function close_breaker( int $stamp ): void {
+		try {
+			$path = self::breaker_path();
+			clearstatcache( true, $path );
+			if ( @filemtime( $path ) === $stamp ) {
+				@unlink( $path );
+			}
+		} catch ( Throwable ) {
+			// A marker left behind simply expires.
+		}
+	}
+
+	/**
+	 * Replace a marker file atomically: write a unique sibling, optionally set
+	 * its modification time, then rename it over the target. Failures only make
+	 * this return false, and nothing here may throw, even under an error handler
+	 * that turns warnings into exceptions.
+	 */
+	private static function write_marker( string $path, ?int $modified_at = null ): bool {
+		try {
+			$temporary = $path . '.' . bin2hex( random_bytes( 8 ) ) . '.tmp';
+			if (
+				false === @file_put_contents( $temporary, (string) time() ) ||
+				( null !== $modified_at && ! @touch( $temporary, $modified_at ) ) ||
+				! @rename( $temporary, $path )
+			) {
+				@unlink( $temporary );
+				return false;
+			}
+
+			clearstatcache( true, $path );
+			return true;
+		} catch ( Throwable ) {
+			// At worst a throwing error handler leaves a temporary sibling behind.
 			return false;
 		}
 	}
@@ -145,9 +334,18 @@ final class Simple_Redis_Cache_Redis {
 	 * fail?" rather than "has anything ever failed on this instance?". A failed
 	 * connection is deliberately preserved: connect() is attempted once, so a later
 	 * call must not look successful merely because it stopped re-reporting it.
+	 * The client's own last error reply is cleared for the same reason.
 	 */
 	private function begin_operation(): void {
 		$this->error = $this->connection_error;
+
+		if ( null !== $this->client ) {
+			try {
+				$this->client->clearLastError();
+			} catch ( Throwable ) {
+				// A broken connection reports itself on the next command.
+			}
+		}
 	}
 
 	public function client(): ?Redis {
@@ -177,6 +375,7 @@ final class Simple_Redis_Cache_Redis {
 			'Redis could not increment the cache generation.' => __( 'Redis could not increment the cache generation.', 'simple-redis-cache' ),
 			'Redis returned an invalid page content version.' => __( 'Redis returned an invalid page content version.', 'simple-redis-cache' ),
 			'Redis could not invalidate page content versions.' => __( 'Redis could not invalidate page content versions.', 'simple-redis-cache' ),
+			'Redis was skipped after a recent connection failure.' => __( 'Redis was skipped after a recent connection failure.', 'simple-redis-cache' ),
 			default => $this->error,
 		};
 	}
@@ -267,9 +466,10 @@ final class Simple_Redis_Cache_Redis {
 	}
 
 	/**
-	 * Return the current content version for a cached WordPress post or taxonomy
-	 * term archive. A missing hash field is initialized atomically with a random
-	 * token, so eviction can never make an older payload current again.
+	 * Return the current content version for a cached WordPress post, taxonomy
+	 * term archive, or list resource. A missing hash field is initialized
+	 * atomically with a random token, so eviction can never make an older payload
+	 * current again.
 	 */
 	public function page_content_version( string $resource_type, int $resource_id ): string|false {
 		$this->begin_operation();
@@ -298,10 +498,11 @@ final class Simple_Redis_Cache_Redis {
 	}
 
 	/**
-	 * Atomically invalidate cached HTML associated with post IDs and/or term
-	 * taxonomy IDs. Payloads retain the previous token and become stale on read.
+	 * Atomically invalidate cached HTML associated with post IDs, term taxonomy
+	 * IDs, and/or list IDs. Payloads retain the previous token and become stale
+	 * on read.
 	 *
-	 * @param array{post?:int[],term?:int[]} $resources
+	 * @param array{post?:int[],term?:int[],list?:int[]} $resources
 	 */
 	public function bump_page_content_versions( array $resources ): int|false {
 		$this->begin_operation();
@@ -311,7 +512,7 @@ final class Simple_Redis_Cache_Redis {
 		}
 
 		$fields = array();
-		foreach ( array( 'post', 'term' ) as $resource_type ) {
+		foreach ( array( 'post', 'term', 'list' ) as $resource_type ) {
 			foreach ( (array) ( $resources[ $resource_type ] ?? array() ) as $resource_id ) {
 				$field = self::page_content_field( $resource_type, (int) $resource_id );
 				if ( null !== $field ) {
@@ -357,7 +558,7 @@ final class Simple_Redis_Cache_Redis {
 	}
 
 	private static function page_content_field( string $resource_type, int $resource_id ): ?string {
-		return $resource_id > 0 && in_array( $resource_type, array( 'post', 'term' ), true )
+		return $resource_id > 0 && in_array( $resource_type, array( 'post', 'term', 'list' ), true )
 			? $resource_type . ':' . $resource_id
 			: null;
 	}

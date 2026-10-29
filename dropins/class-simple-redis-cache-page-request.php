@@ -35,14 +35,28 @@ final class Simple_Redis_Cache_Page_Request {
 		'bricks',
 	);
 
+	/**
+	 * A vary-cookie value has to look like a language or locale code. Anything
+	 * else bypasses, so an anonymous client cannot mint a cache variant per value.
+	 */
+	private const VARY_COOKIE_VALUE_PATTERN = '/^[A-Za-z0-9_-]{1,32}$/D';
+
 	private bool $head_request;
 	private bool $auth_cookie_variant;
 	private string $canonical;
+	private string $variant_group;
+	private bool $storable;
+	/** @var array<string, string> */
+	private array $vary_cookie_values;
 
-	private function __construct( bool $head_request, bool $auth_cookie_variant, string $canonical ) {
+	/** @param array<string, string> $vary_cookie_values */
+	private function __construct( bool $head_request, bool $auth_cookie_variant, string $canonical, string $variant_group, bool $storable, array $vary_cookie_values ) {
 		$this->head_request        = $head_request;
 		$this->auth_cookie_variant = $auth_cookie_variant;
 		$this->canonical           = $canonical;
+		$this->variant_group       = $variant_group;
+		$this->storable            = $storable;
+		$this->vary_cookie_values  = $vary_cookie_values;
 	}
 
 	/**
@@ -136,6 +150,18 @@ final class Simple_Redis_Cache_Page_Request {
 			return null;
 		}
 
+		/*
+		 * WordPress resolves /News/Post/ and /news/post/ to the same 200 page, so
+		 * every case variant would become its own cache entry. Slugs are always
+		 * lower case; a path that is not may still be served from cache but is
+		 * never stored. Percent-encoding is normalized for the same reason.
+		 */
+		$lower_path   = function_exists( 'mb_strtolower' ) ? mb_strtolower( $decoded_path, 'UTF-8' ) : strtolower( $decoded_path );
+		$case_variant = $lower_path !== $decoded_path;
+		$normalized   = self::normalize_path_encoding( $path );
+		$path         = $normalized['path'];
+		$case_variant = $case_variant || $normalized['encoded_unreserved'];
+
 		$user_agent = (string) ( $_SERVER['HTTP_USER_AGENT'] ?? '' );
 		foreach ( (array) ( $page['excluded_user_agents'] ?? array() ) as $pattern ) {
 			if ( self::pattern_matches( $user_agent, (string) $pattern, true, true ) ) {
@@ -146,6 +172,7 @@ final class Simple_Redis_Cache_Page_Request {
 		$cookies        = is_array( $_COOKIE ?? null ) ? $_COOKIE : array();
 		$auth_cookies   = array();
 		$vary_cookies   = array();
+		$vary_values    = array();
 		$vary_patterns  = array_values( array_map( 'strval', (array) ( $page['vary_cookies'] ?? array() ) ) );
 		$exclude_patterns = array_values( array_map( 'strval', (array) ( $page['excluded_cookies'] ?? array() ) ) );
 
@@ -167,7 +194,11 @@ final class Simple_Redis_Cache_Page_Request {
 			}
 
 			if ( $is_vary ) {
+				if ( 1 !== preg_match( self::VARY_COOKIE_VALUE_PATTERN, $cookie_value ) ) {
+					return null;
+				}
 				$vary_cookies[ $cookie_name ] = hash( 'sha256', $cookie_value );
+				$vary_values[ $cookie_name ]  = $cookie_value;
 			}
 
 			foreach ( $exclude_patterns as $exclude_pattern ) {
@@ -208,6 +239,7 @@ final class Simple_Redis_Cache_Page_Request {
 
 		ksort( $auth_cookies, SORT_STRING );
 		ksort( $vary_cookies, SORT_STRING );
+		ksort( $vary_values, SORT_STRING );
 		sort( $vary_patterns, SORT_STRING );
 
 		$cookie_variant = hash(
@@ -222,20 +254,84 @@ final class Simple_Redis_Cache_Page_Request {
 			)
 		);
 
-		$canonical = implode(
-			"\n",
-			array(
-				'simple-redis-cache-page-v1',
-				$scheme,
-				$configured_host,
-				(string) $request_port,
-				$path,
-				$query['query'],
-				$cookie_variant,
-			)
+		// v2: the path is percent-encoding-normalized before it enters the key.
+		$location  = array(
+			'simple-redis-cache-page-v2',
+			$scheme,
+			$configured_host,
+			(string) $request_port,
+			$path,
+			$query['query'],
+		);
+		$canonical = implode( "\n", array_merge( $location, array( $cookie_variant ) ) );
+
+		/*
+		 * Ignored parameters leave the key but not $_GET or REQUEST_URI, and core
+		 * pagination and language switchers echo them into links. Such a request
+		 * may read the canonical page but must never store its own rendering.
+		 */
+		$storable = ! $case_variant && ! $query['ignored'];
+
+		return new self( 'HEAD' === $method, ! empty( $auth_cookies ), $canonical, hash( 'sha256', implode( "\n", $location ) ), $storable, $vary_values );
+	}
+
+	/**
+	 * One URL regardless of its cookie variants. The write path counts how many
+	 * vary-cookie variants each URL holds, so cookie combinations cannot multiply.
+	 */
+	public function variant_group(): string {
+		return $this->variant_group;
+	}
+
+	/**
+	 * Whether a MISS for this request may be written to the cache. A request that
+	 * may not still reads an existing entry under the same key.
+	 */
+	public function is_storable(): bool {
+		return $this->storable;
+	}
+
+	/**
+	 * Vary-cookie names and their raw values for this request, sorted by name.
+	 * A page varied by cookie must never reach a shared cache keyed only by URL.
+	 *
+	 * @return array<string, string>
+	 */
+	public function vary_cookie_values(): array {
+		return $this->vary_cookie_values;
+	}
+
+	/**
+	 * Normalize the spellings WordPress itself treats as one path: escapes use
+	 * upper-case hex and raw bytes outside the path character set are escaped,
+	 * because core sanitizes both forms of a slug alike.
+	 *
+	 * An escaped unreserved character is different. WordPress matches the raw
+	 * path first, so /n%65ws/ looks up a slug "n%65ws" and renders a 404 where
+	 * /news/ renders the post. Decoding it would let anyone store that 404 under
+	 * the live page's key; it stays escaped instead, and the request is reported
+	 * so it is never stored at all.
+	 *
+	 * @return array{path: string, encoded_unreserved: bool}
+	 */
+	private static function normalize_path_encoding( string $path ): array {
+		$encoded_unreserved = false;
+		$normalized         = (string) preg_replace_callback(
+			'~%[0-9A-Fa-f]{2}|[^A-Za-z0-9\-._\~!$&\'()*+,;=:@/]~',
+			static function ( array $match ) use ( &$encoded_unreserved ): string {
+				if ( '%' !== $match[0][0] || 1 === strlen( $match[0] ) ) {
+					return '%' . strtoupper( bin2hex( $match[0] ) );
+				}
+
+				if ( 1 === preg_match( '/^[A-Za-z0-9\-._~]$/', chr( (int) hexdec( substr( $match[0], 1 ) ) ) ) ) {
+					$encoded_unreserved = true;
+				}
+				return '%' . strtoupper( substr( $match[0], 1 ) );
+			},
+			$path
 		);
 
-		return new self( 'HEAD' === $method, ! empty( $auth_cookies ), $canonical );
+		return array( 'path' => $normalized, 'encoded_unreserved' => $encoded_unreserved );
 	}
 
 	/** @param array<string, mixed> $config */
@@ -435,15 +531,16 @@ final class Simple_Redis_Cache_Page_Request {
 
 	/**
 	 * @param string[] $ignored_patterns
-	 * @return array{query: string, names: string[]}|null
+	 * @return array{query: string, names: string[], ignored: bool}|null
 	 */
 	private static function canonical_query( string $query, array $ignored_patterns ): ?array {
 		if ( '' === $query ) {
-			return array( 'query' => '', 'names' => array() );
+			return array( 'query' => '', 'names' => array(), 'ignored' => false );
 		}
 
-		$pairs = array();
-		$names = array();
+		$pairs   = array();
+		$names   = array();
+		$ignored = false;
 		foreach ( explode( '&', $query ) as $segment ) {
 			if ( '' === $segment ) {
 				continue;
@@ -481,19 +578,21 @@ final class Simple_Redis_Cache_Page_Request {
 				return null;
 			}
 
-			$ignored = false;
+			$is_ignored = false;
 			foreach ( $ignored_patterns as $ignored_pattern ) {
 				if ( self::pattern_matches( $php_name, (string) $ignored_pattern, true, false ) ) {
-					$ignored = true;
+					$is_ignored = true;
 					break;
 				}
 			}
-			if ( $ignored ) {
+			if ( $is_ignored ) {
+				$ignored = true;
 				continue;
 			}
 
 			$pairs[] = array( $name, $value );
-			$names[] = $php_name;
+			// PHP keys are case-sensitive: ?S= is not WordPress's search parameter.
+			$names[] = self::php_variable_name( $name, false );
 		}
 
 		/*
@@ -509,7 +608,7 @@ final class Simple_Redis_Cache_Page_Request {
 		$names = array_values( array_unique( $names ) );
 		sort( $names, SORT_STRING );
 
-		return array( 'query' => implode( '&', $encoded ), 'names' => $names );
+		return array( 'query' => implode( '&', $encoded ), 'names' => $names, 'ignored' => $ignored );
 	}
 
 	/**
@@ -522,14 +621,15 @@ final class Simple_Redis_Cache_Page_Request {
 	 * that reasons about what WordPress will do with a parameter has to reason
 	 * about this name, not the one on the wire.
 	 */
-	private static function php_variable_name( string $name ): string {
+	private static function php_variable_name( string $name, bool $lowercase = true ): string {
 		$name    = ltrim( $name, ' ' );
 		$bracket = strpos( $name, '[' );
 		if ( false !== $bracket && false !== strpos( $name, ']', $bracket ) ) {
 			$name = substr( $name, 0, $bracket );
 		}
 
-		return strtolower( strtr( $name, ' .[', '___' ) );
+		$name = strtr( $name, ' .[', '___' );
+		return $lowercase ? strtolower( $name ) : $name;
 	}
 
 	private static function pattern_matches( string $value, string $pattern, bool $case_insensitive, bool $substring_without_wildcard ): bool {

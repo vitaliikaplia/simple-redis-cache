@@ -7,41 +7,55 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-$simple_redis_cache_root = dirname( __DIR__ );
-$simple_redis_cache_dependencies = array(
-	$simple_redis_cache_root . '/includes/class-simple-redis-cache-early-config.php',
-	$simple_redis_cache_root . '/includes/class-simple-redis-cache-redis.php',
-);
+/*
+ * Everything that can fail runs before a single wp_cache_*() function exists.
+ * Returning early from this file lets core load its own runtime cache, so a
+ * damaged plugin file or generated config can never fatal every request.
+ */
+$simple_redis_cache_ready = ( static function (): bool {
+	try {
+		$root = dirname( __DIR__ );
+		foreach (
+			array(
+				$root . '/includes/class-simple-redis-cache-early-config.php',
+				$root . '/includes/class-simple-redis-cache-redis.php',
+			) as $dependency
+		) {
+			if ( ! is_readable( $dependency ) ) {
+				return false;
+			}
+			require_once $dependency;
+		}
 
-foreach ( $simple_redis_cache_dependencies as $simple_redis_cache_dependency ) {
-	if ( ! is_readable( $simple_redis_cache_dependency ) ) {
-		return;
+		// This drop-in intentionally supports single-site WordPress only. If a site is
+		// converted to multisite while the plugin is active, let core load its runtime
+		// cache rather than sharing keys between blogs.
+		if ( function_exists( 'is_multisite' ) && is_multisite() ) {
+			return false;
+		}
+
+		// If disabling/removing the managed drop-in ever fails, do not leave WordPress
+		// believing that an external cache is active. Core will load its runtime cache.
+		$config = Simple_Redis_Cache_Early_Config::load();
+		if ( empty( $config['object']['enabled'] ) ) {
+			return false;
+		}
+
+		// Declaring the class comes last: once it exists, core cannot declare its own.
+		if ( ! class_exists( 'WP_Object_Cache', false ) ) {
+			require_once __DIR__ . '/class-simple-redis-cache-object-cache.php';
+		}
+		return true;
+	} catch ( Throwable ) {
+		return false;
 	}
-	require_once $simple_redis_cache_dependency;
-}
+} )();
 
-unset( $simple_redis_cache_dependencies, $simple_redis_cache_dependency );
-
-// This drop-in intentionally supports single-site WordPress only. If a site is
-// converted to multisite while the plugin is active, let core load its runtime
-// cache rather than sharing keys between blogs.
-if ( function_exists( 'is_multisite' ) && is_multisite() ) {
-	unset( $simple_redis_cache_root );
+if ( ! $simple_redis_cache_ready ) {
+	unset( $simple_redis_cache_ready );
 	return;
 }
-
-// If disabling/removing the managed drop-in ever fails, do not leave WordPress
-// believing that an external cache is active. Core will load its runtime cache.
-$simple_redis_cache_early_config = Simple_Redis_Cache_Early_Config::load();
-if ( empty( $simple_redis_cache_early_config['object']['enabled'] ) ) {
-	unset( $simple_redis_cache_root, $simple_redis_cache_early_config );
-	return;
-}
-unset( $simple_redis_cache_early_config );
-
-if ( ! class_exists( 'WP_Object_Cache', false ) ) {
-	require_once __DIR__ . '/class-simple-redis-cache-object-cache.php';
-}
+unset( $simple_redis_cache_ready );
 
 if ( ! function_exists( 'wp_cache_init' ) ) {
 	function wp_cache_init() {
@@ -255,5 +269,3 @@ if ( ! function_exists( 'wp_cache_set_multiple_salted' ) ) {
 		return wp_cache_set_multiple( $values, $group, $expire );
 	}
 }
-
-unset( $simple_redis_cache_root );

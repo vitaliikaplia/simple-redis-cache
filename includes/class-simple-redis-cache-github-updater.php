@@ -97,18 +97,19 @@ final class Simple_Redis_Cache_GitHub_Updater {
 			'homepage'      => $this->get_repository_url(),
 			'requires'      => '6.5',
 			'requires_php'  => '8.1',
-			'download_link' => $remote_data['package'] ?? $this->get_package_url(),
+			'download_link' => $remote_data['package'] ?? '',
 			'sections'      => array(
 				'description' => '<p>' . esc_html__( 'Redis-only persistent object caching and full-page HTML caching for a single-site WordPress installation.', 'simple-redis-cache' ) . '</p>',
-				'changelog'   => '<p>' . esc_html__( 'Version 0.7.1 makes the plugin work on PHP 8.1, its declared minimum: two return types used syntax that only PHP 8.2 and newer accept, so on PHP 8.1 the plugin failed with a fatal error as soon as WordPress loaded it. The early page-cache loader also no longer overwrites a global $config variable defined in wp-config.php.', 'simple-redis-cache' ) . '</p>',
+				'changelog'   => '<p>' . esc_html__( 'Version 0.8.0 fixes the findings of a code review: changes lost during a Redis outage no longer come back afterwards, a stalled Redis is skipped for 15 seconds, the home page, archives, search and 404 pages are invalidated when content is published, menus, widgets, the theme and updates clear the page cache, 404 and search pages live at most 10 minutes, stored pages are compressed and signed, a copied site gets its own cache namespace, and updates are pinned to one commit.', 'simple-redis-cache' ) . '</p>',
 			),
 		);
 	}
 
 	/**
-	 * GitHub branch archives unpack as simple-redis-cache-master. Rename the
-	 * temporary source to the currently installed plugin directory so updates
-	 * also preserve activation when the first install kept GitHub's ZIP suffix.
+	 * GitHub commit archives unpack as simple-redis-cache-<commit SHA> (branch
+	 * archives as simple-redis-cache-master). Rename the temporary source to the
+	 * currently installed plugin directory so updates also preserve activation
+	 * when the first install kept GitHub's ZIP suffix.
 	 *
 	 * @param mixed               $source
 	 * @param mixed               $remote_source
@@ -186,36 +187,32 @@ final class Simple_Redis_Cache_GitHub_Updater {
 		if ( ! $force ) {
 			$cached = get_site_transient( self::CACHE_KEY );
 			if ( is_array( $cached ) ) {
-				return ! empty( $cached['version'] ) ? $cached : null;
+				if ( empty( $cached['version'] ) ) {
+					return null;
+				}
+				// Data cached before the package was pinned to a commit, or damaged
+				// data, is never offered: check again instead.
+				if ( $this->is_pinned_update_data( $cached ) ) {
+					return $cached;
+				}
 			}
 		}
 
 		$this->remote_check_performed = true;
-		$response = wp_remote_get(
-			$this->get_remote_plugin_file_url(),
-			array(
-				'timeout'             => 10,
-				'redirection'         => 3,
-				'limit_response_size' => 65536,
-				'headers'             => array(
-					'Accept'     => 'text/plain',
-					'User-Agent' => 'Simple-Redis-Cache/' . SIMPLE_REDIS_CACHE_VERSION,
-				),
-			)
-		);
 
-		if ( is_wp_error( $response ) ) {
+		/*
+		 * Resolve the branch to one commit first and read both the version and the
+		 * package from that commit, so a push between the check and the download
+		 * cannot make WordPress install code other than what the check saw.
+		 */
+		$sha = $this->fetch_branch_commit_sha();
+		if ( null === $sha ) {
 			$this->cache_failed_check();
 			return null;
 		}
 
-		$status_code = (int) wp_remote_retrieve_response_code( $response );
-		if ( $status_code < 200 || $status_code >= 300 ) {
-			$this->cache_failed_check();
-			return null;
-		}
-
-		$version = $this->parse_plugin_version( (string) wp_remote_retrieve_body( $response ) );
+		$plugin_file = $this->fetch_remote_body( $this->get_remote_plugin_file_url( $sha ), 'text/plain', 65536 );
+		$version     = null !== $plugin_file ? $this->parse_plugin_version( $plugin_file ) : null;
 		if ( null === $version ) {
 			$this->cache_failed_check();
 			return null;
@@ -223,7 +220,8 @@ final class Simple_Redis_Cache_GitHub_Updater {
 
 		$data = array(
 			'version'      => $version,
-			'package'      => $this->get_package_url(),
+			'sha'          => $sha,
+			'package'      => $this->get_package_url( $sha ),
 			'url'          => $this->get_repository_url(),
 			'branch'       => self::BRANCH,
 			'last_checked' => time(),
@@ -233,6 +231,51 @@ final class Simple_Redis_Cache_GitHub_Updater {
 		set_site_transient( self::CACHE_KEY, $data, self::CACHE_TTL );
 
 		return $data;
+	}
+
+	private function fetch_branch_commit_sha(): ?string {
+		$sha = $this->fetch_remote_body( $this->get_branch_commit_url(), 'application/vnd.github.sha', 1024 );
+
+		return null !== $sha && $this->is_commit_sha( $sha ) ? $sha : null;
+	}
+
+	/** Body of a 2xx response, or null for a transport error or any other status. */
+	private function fetch_remote_body( string $url, string $accept, int $max_bytes ): ?string {
+		$response = wp_remote_get(
+			$url,
+			array(
+				'timeout'             => 10,
+				'redirection'         => 3,
+				'limit_response_size' => $max_bytes,
+				'headers'             => array(
+					'Accept'     => $accept,
+					'User-Agent' => 'Simple-Redis-Cache/' . SIMPLE_REDIS_CACHE_VERSION,
+				),
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return null;
+		}
+
+		$status_code = (int) wp_remote_retrieve_response_code( $response );
+		if ( $status_code < 200 || $status_code >= 300 ) {
+			return null;
+		}
+
+		return (string) wp_remote_retrieve_body( $response );
+	}
+
+	private function is_commit_sha( mixed $value ): bool {
+		return is_string( $value ) && 1 === preg_match( '/^[0-9a-f]{40}$/D', $value );
+	}
+
+	/** @param array<mixed> $data */
+	private function is_pinned_update_data( array $data ): bool {
+		return ! empty( $data['version'] )
+			&& isset( $data['sha'], $data['package'] )
+			&& $this->is_commit_sha( $data['sha'] )
+			&& $this->get_package_url( $data['sha'] ) === $data['package'];
 	}
 
 	/** @param array<string, int|string> $remote_data */
@@ -303,19 +346,27 @@ final class Simple_Redis_Cache_GitHub_Updater {
 		@rmdir( $directory );
 	}
 
-	private function get_remote_plugin_file_url(): string {
+	private function get_branch_commit_url(): string {
 		return sprintf(
-			'https://raw.githubusercontent.com/%s/%s/simple-redis-cache.php',
+			'https://api.github.com/repos/%s/commits/%s',
 			self::REPOSITORY,
 			$this->get_url_branch()
 		);
 	}
 
-	private function get_package_url(): string {
+	private function get_remote_plugin_file_url( string $sha ): string {
 		return sprintf(
-			'https://github.com/%s/archive/refs/heads/%s.zip',
+			'https://raw.githubusercontent.com/%s/%s/simple-redis-cache.php',
 			self::REPOSITORY,
-			$this->get_url_branch()
+			rawurlencode( $sha )
+		);
+	}
+
+	private function get_package_url( string $sha ): string {
+		return sprintf(
+			'https://github.com/%s/archive/%s.zip',
+			self::REPOSITORY,
+			rawurlencode( $sha )
 		);
 	}
 

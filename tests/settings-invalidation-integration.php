@@ -8,6 +8,8 @@ define( 'WP_CONTENT_DIR', dirname( __DIR__ ) );
 
 require_once dirname( __DIR__ ) . '/includes/class-simple-redis-cache-early-config.php';
 require_once dirname( __DIR__ ) . '/includes/class-simple-redis-cache-redis.php';
+// Invalidation refuses namespaces named by another installation's settings.
+require_once dirname( __DIR__ ) . '/includes/class-simple-redis-cache-config.php';
 require_once dirname( __DIR__ ) . '/includes/class-simple-redis-cache-plugin.php';
 
 if ( ! extension_loaded( 'redis' ) ) {

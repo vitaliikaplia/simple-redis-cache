@@ -36,6 +36,17 @@ if ( is_readable( $simple_redis_cache_config ) ) {
 	}
 }
 
+// Runtime markers of the Redis circuit breaker and the object-cache dirty flag,
+// with any temporary or claimed sibling an interrupted request left behind.
+foreach ( array( 'simple-redis-cache-breaker', 'simple-redis-cache-object-dirty' ) as $simple_redis_cache_marker ) {
+	$simple_redis_cache_paths = glob( WP_CONTENT_DIR . '/' . $simple_redis_cache_marker . '*' );
+	foreach ( is_array( $simple_redis_cache_paths ) ? $simple_redis_cache_paths : array() as $simple_redis_cache_path ) {
+		if ( is_file( $simple_redis_cache_path ) ) {
+			@unlink( $simple_redis_cache_path );
+		}
+	}
+}
+
 delete_option( 'simple_redis_cache_settings' );
 delete_option( '_simple_redis_cache_notices' );
 delete_metadata( 'user', 0, '_simple_redis_cache_notices', '', true );
@@ -45,5 +56,8 @@ unset(
 	$simple_redis_cache_config,
 	$simple_redis_cache_dropin,
 	$simple_redis_cache_head,
-	$simple_redis_cache_invalidate
+	$simple_redis_cache_invalidate,
+	$simple_redis_cache_marker,
+	$simple_redis_cache_path,
+	$simple_redis_cache_paths
 );

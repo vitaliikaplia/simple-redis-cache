@@ -30,8 +30,17 @@ class WP_Object_Cache {
 	public $blog_prefix = '';
 	public $multisite = false;
 
-	/** @var string[] Runtime Redis errors, kept for diagnostics. */
+	/** @var string[] Runtime Redis errors, kept for diagnostics (distinct, capped). */
 	public $errors = array();
+
+	/** Bound on $errors, so a long-running WP-CLI process cannot grow it forever. */
+	private const MAX_ERRORS = 20;
+
+	/**
+	 * Option holding the Redis password and the Cloudflare API token. Mirrors
+	 * Simple_Redis_Cache_Config::OPTION, which is not loaded this early.
+	 */
+	private const SETTINGS_OPTION = 'simple_redis_cache_settings';
 
 	/** @var array<string, array<int|string, int>> Unix expiry times for L1 entries. */
 	private array $expirations = array();
@@ -59,6 +68,21 @@ class WP_Object_Cache {
 	/** @var array<string, int> */
 	private array $group_generations = array();
 
+	/**
+	 * Marker file left when persistent data changed while Redis could not take
+	 * the change. The next request that reaches Redis invalidates the object
+	 * namespace and removes it. An empty path disables the marker.
+	 */
+	private string $dirty_marker = '';
+	private bool $dirty_write_failed = false;
+
+	/**
+	 * Seconds after which the claim of a request invalidating the namespace is
+	 * considered abandoned: twice the read timeout its single bump may take, plus
+	 * a margin for the one-second resolution of file modification times.
+	 */
+	private int $claim_seconds;
+
 	public function __construct() {
 		$this->config                   = Simple_Redis_Cache_Early_Config::load();
 		$this->object_config            = (array) ( $this->config['object'] ?? array() );
@@ -69,7 +93,9 @@ class WP_Object_Cache {
 			! defined( 'WP_ADMIN' ) || ! WP_ADMIN || ! empty( $this->object_config['cache_wp_admin'] )
 		);
 		$this->prefix                   = Simple_Redis_Cache_Early_Config::prefix( $this->config );
-		$this->redis                    = new Simple_Redis_Cache_Redis( $this->config );
+		$this->redis                    = new Simple_Redis_Cache_Redis( $this->config, true );
+		$this->dirty_marker             = WP_CONTENT_DIR . '/simple-redis-cache-object-dirty';
+		$this->claim_seconds            = (int) ceil( 2 * max( 0.1, (float) ( $this->config['redis']['read_timeout'] ?? 1.0 ) ) ) + 2;
 
 		$this->add_non_persistent_groups(
 			(array) ( $this->object_config['non_persistent_groups'] ?? array() )
@@ -105,7 +131,7 @@ class WP_Object_Cache {
 			if ( $db['found'] ) {
 				$value = $db['value'];
 				$ttl   = $db['ttl'];
-				if ( $this->is_persistent_group( $group ) ) {
+				if ( $this->is_persistent_key( $key, $group ) ) {
 					$rewarmed = $this->store_redis( $key, $group, $value, $ttl, true );
 					if ( false === $rewarmed ) {
 						$winner = $this->read_redis( $key, $group );
@@ -120,9 +146,24 @@ class WP_Object_Cache {
 			}
 		}
 
-		if ( $this->is_persistent_group( $group ) ) {
+		// A lost add() needs no dirty marker: it can leave Redis without the value,
+		// never with a stale one.
+		if ( $this->is_persistent_key( $key, $group ) ) {
 			$stored = $this->store_redis( $key, $group, $data, $ttl, true );
+
+			/*
+			 * NX refused because Redis already holds the key, so add() fails: callers
+			 * that use it as a lock must see the refusal. A request that may not read
+			 * persistent groups (wp-admin with cache_wp_admin off) cannot see that
+			 * value, so it keeps the caller's copy in L1 all the same; otherwise every
+			 * get_option() there would miss and reload alloptions from the database.
+			 * Neither the Redis copy nor the database mirror is touched, and an
+			 * unserializable value is not kept at all.
+			 */
 			if ( false === $stored ) {
+				if ( ! $this->can_read_persistent_key( $key, $group ) && false !== $this->encode( $data ) ) {
+					$this->put_runtime( $key, $group, $data, $ttl );
+				}
 				return false;
 			}
 		}
@@ -160,7 +201,7 @@ class WP_Object_Cache {
 		$ttl           = $this->normalize_ttl( $expire );
 		$runtime_found = $this->runtime_exists( $key, $group );
 
-		if ( ! $this->is_persistent_group( $group ) ) {
+		if ( ! $this->is_persistent_key( $key, $group ) ) {
 			// A mirrored transient group can still prove existence from the database,
 			// and must receive the replacement there too. Otherwise replace() would
 			// contradict a get() in the same request and leave a stale database row.
@@ -203,6 +244,9 @@ class WP_Object_Cache {
 		}
 
 		if ( null === $stored ) {
+			// Whatever this call returns, Redis may still hold the value it replaces.
+			$this->mark_dirty();
+
 			if ( ! $runtime_found && $this->uses_db_fallback( $group ) ) {
 				$db_value = is_array( $db_value ) ? $db_value : $this->read_db_transient( $key, $group );
 				$runtime_found = ! empty( $db_value['found'] );
@@ -243,12 +287,25 @@ class WP_Object_Cache {
 
 		$this->put_runtime( $key, $group, $data, $ttl );
 
-		if ( $this->is_persistent_group( $group ) ) {
-			$this->store_redis( $key, $group, $data, $ttl );
+		if ( $this->is_persistent_key( $key, $group ) ) {
+			$stored = $this->store_redis( $key, $group, $data, $ttl );
+
+			/*
+			 * A plain SET is refused only for a value that cannot be serialized. It
+			 * never reaches Redis, so the previous copy must go, or later requests
+			 * would keep reading it; a DEL that cannot be done marks the cache dirty.
+			 */
+			if ( false === $stored ) {
+				$stored = $this->delete_redis( $key, $group );
+			}
+			if ( null === $stored ) {
+				$this->mark_dirty();
+			}
 		}
 
-		if ( $this->uses_db_fallback( $group ) ) {
-			$this->write_db_transient( $key, $group, $data, $ttl );
+		// The mirror refuses the same unserializable value; drop its old row too.
+		if ( $this->uses_db_fallback( $group ) && ! $this->write_db_transient( $key, $group, $data, $ttl ) ) {
+			$this->delete_db_transient( $key, $group );
 		}
 
 		return true;
@@ -280,7 +337,7 @@ class WP_Object_Cache {
 		$key   = (string) $key;
 
 		$runtime_found = $this->runtime_exists( $key, $group );
-		$can_refresh   = $this->can_read_persistent_group( $group ) || $this->uses_db_fallback( $group );
+		$can_refresh   = $this->can_read_persistent_key( $key, $group ) || $this->uses_db_fallback( $group );
 
 		if ( ( ! $force || ! $can_refresh ) && $runtime_found ) {
 			$found = true;
@@ -296,7 +353,7 @@ class WP_Object_Cache {
 			$this->remove_runtime( $key, $group );
 		}
 
-		if ( $this->can_read_persistent_group( $group ) ) {
+		if ( $this->can_read_persistent_key( $key, $group ) ) {
 			$redis_value = $this->read_redis( $key, $group );
 			if ( $redis_value['found'] ) {
 				$this->put_runtime( $key, $group, $redis_value['value'], $redis_value['ttl'] );
@@ -311,7 +368,7 @@ class WP_Object_Cache {
 			if ( $db_value['found'] ) {
 				$value = $db_value['value'];
 				$ttl   = $db_value['ttl'];
-				if ( $this->is_persistent_group( $group ) ) {
+				if ( $this->is_persistent_key( $key, $group ) ) {
 					// Rewarm without overwriting a value created after our Redis miss.
 					$rewarmed = $this->store_redis( $key, $group, $value, $ttl, true );
 					if ( false === $rewarmed ) {
@@ -365,9 +422,12 @@ class WP_Object_Cache {
 		$key     = (string) $key;
 		$deleted = $this->remove_runtime( $key, $group );
 
-		if ( $this->is_persistent_group( $group ) ) {
+		if ( $this->is_persistent_key( $key, $group ) ) {
 			$redis_deleted = $this->delete_redis( $key, $group );
-			$deleted       = true === $redis_deleted || $deleted;
+			if ( null === $redis_deleted ) {
+				$this->mark_dirty();
+			}
+			$deleted = true === $redis_deleted || $deleted;
 		}
 
 		if ( $this->uses_db_fallback( $group ) ) {
@@ -415,6 +475,14 @@ class WP_Object_Cache {
 
 		if ( $this->object_enabled ) {
 			$redis_ok = $this->bump_object_generation();
+			if ( ! $redis_ok ) {
+				/*
+				 * The next request that reaches Redis invalidates the Redis copies.
+				 * Nothing deletes the database mirror later, so its rows (current,
+				 * since every change reaches them) outlive this flush, which fails.
+				 */
+				$this->mark_dirty();
+			}
 		}
 
 		/*
@@ -449,6 +517,10 @@ class WP_Object_Cache {
 		$redis_ok = true;
 		if ( $this->is_persistent_group( $group ) ) {
 			$redis_ok = $this->bump_group_generation( $group );
+			if ( ! $redis_ok ) {
+				// As in flush(), the deferred invalidation covers Redis only.
+				$this->mark_dirty();
+			}
 		}
 
 		// Same rule as flush(): no database deletion behind a failed generation bump.
@@ -586,8 +658,17 @@ class WP_Object_Cache {
 		return $this->object_enabled && ! isset( $this->non_persistent_groups[ $group ] );
 	}
 
-	private function can_read_persistent_group( string $group ): bool {
-		if ( ! $this->is_persistent_group( $group ) ) {
+	/**
+	 * Core caches the plugin's own settings as options:simple_redis_cache_settings,
+	 * and they hold the Redis password and the Cloudflare API token. That one entry
+	 * stays in L1 and is read from the options table, so the secrets never reach Redis.
+	 */
+	private function is_persistent_key( string $key, string $group ): bool {
+		return $this->is_persistent_group( $group ) && ! ( 'options' === $group && self::SETTINGS_OPTION === $key );
+	}
+
+	private function can_read_persistent_key( string $key, string $group ): bool {
+		if ( ! $this->is_persistent_key( $key, $group ) ) {
 			return false;
 		}
 
@@ -621,7 +702,10 @@ class WP_Object_Cache {
 		$this->redis_attempted = true;
 		$client                = $this->redis->client();
 		if ( null === $client ) {
-			$this->record_redis_error( $this->redis->error() ?? 'Unable to connect to Redis.' );
+			// connect() has already tripped the breaker for a real failure, and a
+			// connection the open breaker skipped must not extend it.
+			$this->redis_failed = true;
+			$this->remember_error( $this->redis->error() ?? 'Unable to connect to Redis.' );
 			return null;
 		}
 
@@ -638,7 +722,9 @@ class WP_Object_Cache {
 		}
 
 		$this->redis_client = $client;
-		return $this->redis_client;
+
+		// A pending or failed invalidation leaves the namespace stale: run uncached instead.
+		return $this->clear_dirty_marker() && ! $this->redis_failed ? $this->redis_client : null;
 	}
 
 	private function storage_key( string $key, string $group ): ?string {
@@ -661,12 +747,14 @@ class WP_Object_Cache {
 			return $this->object_generation;
 		}
 
-		$this->object_generation = $this->redis->generation( 'object' );
+		// Never memoize the placeholder generation() returns alongside an error.
+		$generation = $this->redis->generation( 'object' );
 		if ( null !== $this->redis->error() ) {
 			$this->record_redis_error( $this->redis->error() );
 			return null;
 		}
 
+		$this->object_generation = $generation;
 		return $this->object_generation;
 	}
 
@@ -675,14 +763,14 @@ class WP_Object_Cache {
 			return $this->group_generations[ $group ];
 		}
 
-		$namespace                         = $this->group_generation_namespace( $group );
-		$this->group_generations[ $group ] = $this->redis->generation( $namespace );
+		$generation = $this->redis->generation( $this->group_generation_namespace( $group ) );
 		if ( null !== $this->redis->error() ) {
 			$this->record_redis_error( $this->redis->error() );
 			return null;
 		}
 
-		return $this->group_generations[ $group ];
+		$this->group_generations[ $group ] = $generation;
+		return $generation;
 	}
 
 	private function group_generation_namespace( string $group ): string {
@@ -725,7 +813,7 @@ class WP_Object_Cache {
 		try {
 			return "SRC1\0" . serialize( $value );
 		} catch ( Throwable $throwable ) {
-			$this->errors[] = 'Object-cache serialization failed: ' . $throwable->getMessage();
+			$this->remember_error( 'Object-cache serialization failed: ' . $throwable->getMessage() );
 			return false;
 		}
 	}
@@ -879,7 +967,7 @@ class WP_Object_Cache {
 		$group = $this->normalize_group( $group );
 		$key   = (string) $key;
 
-		if ( $this->is_persistent_group( $group ) ) {
+		if ( $this->is_persistent_key( $key, $group ) ) {
 			$redis_result = $this->change_numeric_value_in_redis( $key, $group, $change );
 
 			if ( 'missing' === $redis_result['status'] && $this->uses_db_fallback( $group ) ) {
@@ -903,6 +991,11 @@ class WP_Object_Cache {
 						$redis_result = $this->change_numeric_value_in_redis( $key, $group, $change );
 					}
 				}
+			}
+
+			if ( 'unavailable' === $redis_result['status'] ) {
+				// The change may or may not have reached Redis before it failed.
+				$this->mark_dirty();
 			}
 
 			if ( 'success' === $redis_result['status'] ) {
@@ -1142,14 +1235,250 @@ class WP_Object_Cache {
 
 	private function disable_redis( Throwable $throwable ): void {
 		$this->record_redis_error( $throwable->getMessage() );
-		$this->redis_failed = true;
 		$this->redis_client = null;
 	}
 
+	/**
+	 * A runtime Redis failure: stop using Redis for the rest of this request. When
+	 * the connection itself failed, the next requests skip Redis briefly instead
+	 * of each waiting on a timeout; an error reply (OOM, READONLY) fails this
+	 * request only. The Redis wrapper tells the two apart.
+	 */
 	private function record_redis_error( string $message ): void {
 		$this->redis_failed = true;
-		if ( '' !== $message && ! in_array( $message, $this->errors, true ) ) {
-			$this->errors[] = $message;
+		$this->remember_error( $message );
+		$this->redis->trip_breaker();
+	}
+
+	private function remember_error( string $message ): void {
+		if ( '' === $message || in_array( $message, $this->errors, true ) ) {
+			return;
 		}
+
+		$this->errors[] = $message;
+		if ( count( $this->errors ) > self::MAX_ERRORS ) {
+			array_shift( $this->errors );
+		}
+	}
+
+	/**
+	 * Record that a persistent change never reached Redis, so its old copy cannot
+	 * outlive the outage until max_ttl. The marker is written only when missing,
+	 * which costs one stat per lost change and also covers a marker that another
+	 * request cleared after this one wrote it. Write failures are ignored.
+	 */
+	private function mark_dirty(): void {
+		if ( '' === $this->dirty_marker || $this->dirty_write_failed ) {
+			return;
+		}
+
+		try {
+			clearstatcache( true, $this->dirty_marker );
+			if ( is_file( $this->dirty_marker ) ) {
+				return;
+			}
+
+			$temporary = $this->dirty_marker . '.' . bin2hex( random_bytes( 8 ) ) . '.tmp';
+			if ( false === @file_put_contents( $temporary, (string) time() ) || ! @rename( $temporary, $this->dirty_marker ) ) {
+				@unlink( $temporary );
+				$this->dirty_write_failed = true;
+			}
+		} catch ( Throwable $throwable ) {
+			$this->dirty_write_failed = true;
+		}
+	}
+
+	/**
+	 * Called on the first successful connection of a request: finish what an
+	 * earlier request could not by invalidating the object namespace before this
+	 * one reads anything. Returns false when this request must run uncached.
+	 * Without a marker or a claim this costs two stats.
+	 *
+	 * The invalidating request first creates the claim file, exclusively, and
+	 * only then removes the marker. Every other request checks the marker before
+	 * the claim, so it cannot find neither while an invalidation is still
+	 * pending; while the claim is fresh, it runs uncached (L1 and the database
+	 * mirror only) rather than read the namespace about to be replaced. A marker
+	 * written meanwhile by a request that is still failing survives the claim.
+	 */
+	private function clear_dirty_marker(): bool {
+		if ( '' === $this->dirty_marker ) {
+			return true;
+		}
+
+		$claim = $this->dirty_marker . '.claimed';
+		$token = '';
+		$busy  = 'Redis was skipped while another request invalidates the object cache.';
+
+		try {
+			clearstatcache( true, $this->dirty_marker );
+			$dirty = is_file( $this->dirty_marker );
+			clearstatcache( true, $claim );
+			$claimed_at = is_file( $claim ) ? @filemtime( $claim ) : false;
+
+			if ( ! $dirty && false === $claimed_at ) {
+				return true;
+			}
+
+			// A fresh claim: another request is invalidating right now. It takes about
+			// one EVAL, so wait briefly rather than run uncached and mark the cache
+			// dirty all over again. One older than any invalidation can take was
+			// abandoned, and is taken over below.
+			if ( false !== $claimed_at && $this->claim_is_fresh( $claimed_at ) ) {
+				if ( ! $this->wait_for_claim( $claim ) ) {
+					return $this->skip_redis( $busy );
+				}
+				clearstatcache( true, $this->dirty_marker );
+				$dirty = is_file( $this->dirty_marker );
+				if ( ! $dirty ) {
+					return true;
+				}
+				$claimed_at = false;
+			}
+
+			$token = bin2hex( random_bytes( 8 ) );
+			if ( ! $this->claim_dirty_marker( $claim, $token, false !== $claimed_at ) ) {
+				clearstatcache( true, $claim );
+				$current = is_file( $claim ) ? @filemtime( $claim ) : false;
+				if ( false !== $current && $this->claim_is_fresh( $current ) ) {
+					return $this->skip_redis( $busy );
+				}
+
+				// wp-content refuses the claim — say, a marker WP-CLI left as another
+				// user. Running uncached until someone fixes the permissions would be
+				// silent and permanent, so invalidate without a claim instead.
+				return $this->invalidate_unclaimable( $dirty ? $this->dirty_marker : $claim );
+			}
+
+			if ( $dirty ) {
+				@unlink( $this->dirty_marker );
+			}
+		} catch ( Throwable $throwable ) {
+			// A claim this left behind is abandoned once it is no longer fresh.
+			return $this->skip_redis( $busy );
+		}
+
+		$invalidated = $this->bump_object_generation();
+
+		try {
+			// A request that took the claim over finishes the invalidation instead.
+			if ( $token === @file_get_contents( $claim ) ) {
+				if ( $invalidated ) {
+					@unlink( $claim );
+				} else {
+					// Hand the claim back: backdated, it reads as abandoned to the next
+					// request. If even that fails, it expires on its own.
+					@touch( $claim, time() - $this->claim_seconds - 1 );
+				}
+			}
+		} catch ( Throwable $throwable ) {
+			// A leftover claim is abandoned once it is no longer fresh.
+		}
+
+		// A failed bump has already disabled Redis for this request.
+		return $invalidated;
+	}
+
+	/**
+	 * Create the claim file, or replace an abandoned one so that the request that
+	 * abandoned it can no longer release it. Either way the claim exists without
+	 * a gap, and it holds this request's token.
+	 */
+	private function claim_dirty_marker( string $claim, string $token, bool $take_over ): bool {
+		if ( ! $take_over ) {
+			$handle = @fopen( $claim, 'x' );
+			if ( false === $handle ) {
+				return false;
+			}
+
+			$written = @fwrite( $handle, $token );
+			@fclose( $handle );
+			if ( strlen( $token ) !== $written ) {
+				@unlink( $claim );
+				return false;
+			}
+
+			return true;
+		}
+
+		$temporary = $claim . '.' . $token . '.tmp';
+		if ( false === @file_put_contents( $temporary, $token ) || ! @rename( $temporary, $claim ) ) {
+			@unlink( $temporary );
+			return false;
+		}
+
+		return true;
+	}
+
+	/** Wait up to 50 ms for another request's claim to be released. */
+	private function wait_for_claim( string $claim ): bool {
+		for ( $attempt = 0; $attempt < 10; $attempt++ ) {
+			usleep( 5000 );
+			clearstatcache( true, $claim );
+			if ( ! is_file( $claim ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Invalidate for a marker or claim this request cannot take. Redis records
+	 * which file, by modification time and content, it was invalidated for, so
+	 * the next requests see that and use Redis again instead of bumping the
+	 * namespace on every request. A changed or rewritten file is a new one.
+	 */
+	private function invalidate_unclaimable( string $path ): bool {
+		try {
+			clearstatcache( true, $path );
+			$modified = @filemtime( $path );
+			if ( false === $modified ) {
+				return true;
+			}
+
+			$stamp  = hash( 'sha256', $modified . "\0" . (string) @file_get_contents( $path, false, null, 0, 64 ) );
+			$key    = $this->prefix . 'meta:object-dirty-acknowledged';
+			$client = $this->redis->client();
+			if ( null === $client ) {
+				return false;
+			}
+			if ( $stamp === $client->get( $key ) ) {
+				return true;
+			}
+		} catch ( Throwable $throwable ) {
+			$this->disable_redis( $throwable );
+			return false;
+		}
+
+		if ( ! $this->bump_object_generation() ) {
+			return false;
+		}
+
+		try {
+			$client->set( $key, $stamp );
+		} catch ( Throwable $throwable ) {
+			// The next request invalidates once more; nothing stale is served.
+		}
+
+		return true;
+	}
+
+	/** Whether a claim is recent enough that its request may still be invalidating. */
+	private function claim_is_fresh( int $claimed_at ): bool {
+		// A claim from the future (clock change) must not hold Redis off forever.
+		$age = time() - $claimed_at;
+		return $age < $this->claim_seconds && $age > -$this->claim_seconds;
+	}
+
+	/**
+	 * Run the rest of this request without Redis although it is reachable. This
+	 * is no Redis failure, so the breaker stays as it is; lost changes still mark
+	 * the cache dirty.
+	 */
+	private function skip_redis( string $message ): bool {
+		$this->redis_failed = true;
+		$this->remember_error( $message );
+		return false;
 	}
 }

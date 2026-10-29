@@ -162,6 +162,10 @@ final class Simple_Redis_Cache_Config {
 	public static function get(): array {
 		return $GLOBALS['src_test_config'];
 	}
+
+	public static function is_foreign( ?array $config = null ): bool {
+		return ! empty( $GLOBALS['src_test_foreign'] );
+	}
 }
 
 final class Simple_Redis_Cache_Redis {
@@ -252,7 +256,7 @@ function get_permalink( mixed $post ): string {
 }
 
 function get_term_link( object $term ): string {
-	return 'https://example.test/term-' . $term->term_taxonomy_id . '/';
+	return $GLOBALS['src_test_term_link'] ?? 'https://example.test/term-' . $term->term_taxonomy_id . '/';
 }
 
 require_once dirname( __DIR__ ) . '/includes/class-simple-redis-cache-page-invalidator.php';
@@ -400,4 +404,204 @@ Simple_Redis_Cache_Page_Invalidator::flush();
 $assert( 1 === count( Simple_Redis_Cache_Admin::$notices ), 'A Redis invalidation failure did not queue one administrator warning.' );
 $assert( 'warning' === Simple_Redis_Cache_Admin::$notices[0]['type'], 'A Redis invalidation failure queued the wrong notice type.' );
 
-echo "OK: post updates invalidate translated singular pages and related public taxonomy archives while failing open.\n";
+/* ---- Listing, term and site-change invalidation (0.8.0) ---------------- */
+
+function home_url( string $path = '' ): string {
+	return 'https://example.test' . $path;
+}
+
+function get_option( string $name, mixed $default_value = false ): mixed {
+	return array( 'show_on_front' => 'page', 'page_for_posts' => 9 )[ $name ] ?? $default_value;
+}
+
+function get_post_type_archive_link( string $post_type ): string|false {
+	return 'post' === $post_type ? false : 'https://example.test/' . $post_type . '/';
+}
+
+function pll_languages_list(): array {
+	return array( 'uk', 'en' );
+}
+
+function pll_home_url( string $language ): string {
+	return 'https://example.test/' . $language . '/';
+}
+
+final class Simple_Redis_Cache_Purger {
+	/** @var string[] */
+	public static array $scopes = array();
+
+	public static function purge( string $scope = 'all' ): array|WP_Error {
+		self::$scopes[] = $scope;
+		return array( 'page_generation' => 2 );
+	}
+}
+
+final class Simple_Redis_Cache_Page_Capture {
+	public const LISTING_RESOURCE_ID = 1;
+}
+
+$listing_post = static function ( string $status ): object {
+	return (object) array( 'ID' => 1, 'post_type' => 'post', 'post_status' => $status );
+};
+$reset = static function (): void {
+	Simple_Redis_Cache_Redis::$fail        = false;
+	Simple_Redis_Cache_Admin::$notices     = array();
+	Simple_Redis_Cache_Redis::$invalidated = array();
+	Simple_Redis_Cache_Cloudflare::$purged = null;
+	$GLOBALS['src_test_actions']           = array();
+};
+
+$GLOBALS['src_test_config']['page'] = array(
+	'enabled'                                 => true,
+	'invalidate_on_post_update'               => true,
+	'invalidate_term_archives_on_post_update' => true,
+	'invalidate_listings_on_post_update'      => true,
+	'purge_on_site_change'                    => true,
+);
+
+// Scheduled publishing changes the status without post_updated.
+$reset();
+Simple_Redis_Cache_Page_Invalidator::transition_post_status( 'publish', 'future', $listing_post( 'publish' ) );
+$assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Publishing a scheduled post did not schedule an invalidation.' );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( array( 1 ) === ( Simple_Redis_Cache_Redis::$invalidated['list'] ?? null ), 'Publishing a scheduled post did not invalidate the listing pages.' );
+$assert( in_array( 1, Simple_Redis_Cache_Redis::$invalidated['post'] ?? array(), true ), 'Publishing a scheduled post did not invalidate the post itself.' );
+$assert( ! empty( Simple_Redis_Cache_Redis::$invalidated['term'] ), 'Publishing a scheduled post did not invalidate its term archives.' );
+
+// A change that never touches public output leaves the listings alone.
+$reset();
+Simple_Redis_Cache_Page_Invalidator::transition_post_status( 'draft', 'draft', $listing_post( 'draft' ) );
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Saving a draft scheduled an invalidation.' );
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $listing_post( 'draft' ), $listing_post( 'draft' ) );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( ! isset( Simple_Redis_Cache_Redis::$invalidated['list'] ), 'Editing a draft invalidated the listing pages.' );
+
+// Unpublishing through wp_update_post() does reach the listings.
+$reset();
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $listing_post( 'draft' ), $listing_post( 'publish' ) );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( array( 1 ) === ( Simple_Redis_Cache_Redis::$invalidated['list'] ?? null ), 'Unpublishing a post did not invalidate the listing pages.' );
+
+// Permanent deletion of a published post.
+$reset();
+Simple_Redis_Cache_Page_Invalidator::before_delete_post( 1, $listing_post( 'publish' ) );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( array( 1 ) === ( Simple_Redis_Cache_Redis::$invalidated['list'] ?? null ) && in_array( 1, Simple_Redis_Cache_Redis::$invalidated['post'] ?? array(), true ), 'Deleting a published post did not invalidate it and the listing pages.' );
+
+// Renaming or deleting a term invalidates its archive, its parent and the listings.
+$reset();
+Simple_Redis_Cache_Page_Invalidator::term_changed( 12, 112, 'category' );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( in_array( 112, Simple_Redis_Cache_Redis::$invalidated['term'] ?? array(), true ), 'Editing a term did not invalidate its archive.' );
+$assert( array( 1 ) === ( Simple_Redis_Cache_Redis::$invalidated['list'] ?? null ), 'Editing a term did not invalidate the listing pages.' );
+
+$reset();
+$deleted_term = (object) array( 'term_id' => 12, 'term_taxonomy_id' => 112, 'parent' => 10, 'taxonomy' => 'category' );
+Simple_Redis_Cache_Page_Invalidator::term_deleted( 12, 112, 'category', $deleted_term, array() );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( in_array( 112, Simple_Redis_Cache_Redis::$invalidated['term'] ?? array(), true ), 'Deleting a term did not invalidate its archive.' );
+
+$reset();
+Simple_Redis_Cache_Page_Invalidator::term_changed( 91, 911, 'internal' );
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Editing a term of a non-viewable taxonomy scheduled an invalidation.' );
+
+// The edge copy of every listing address goes too.
+$reset();
+$GLOBALS['src_test_config']['cloudflare'] = array( 'purge_on_post_update' => true );
+Simple_Redis_Cache_Page_Invalidator::transition_post_status( 'publish', 'future', (object) array( 'ID' => 1, 'post_type' => 'post', 'post_status' => 'publish' ) );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$purged = (array) Simple_Redis_Cache_Cloudflare::$purged;
+foreach ( array( 'https://example.test/', 'https://example.test/uk/', 'https://example.test/en/' ) as $listing_url ) {
+	$assert( in_array( $listing_url, $purged, true ), "Listing URL {$listing_url} was not purged from Cloudflare." );
+}
+unset( $GLOBALS['src_test_config']['cloudflare'] );
+
+// The listing token only moves while its option is on.
+$reset();
+$GLOBALS['src_test_config']['page']['invalidate_listings_on_post_update'] = false;
+Simple_Redis_Cache_Page_Invalidator::transition_post_status( 'publish', 'future', $listing_post( 'publish' ) );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( ! isset( Simple_Redis_Cache_Redis::$invalidated['list'] ), 'The listing token changed although its option was off.' );
+$GLOBALS['src_test_config']['page']['invalidate_listings_on_post_update'] = true;
+
+// Settings copied from another installation must not touch its namespace.
+$reset();
+$GLOBALS['src_test_foreign'] = true;
+Simple_Redis_Cache_Page_Invalidator::transition_post_status( 'publish', 'future', $listing_post( 'publish' ) );
+Simple_Redis_Cache_Page_Invalidator::post_updated( 1, $listing_post( 'publish' ), $listing_post( 'publish' ) );
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'A copied site queued an invalidation of the original site\'s namespace.' );
+$GLOBALS['src_test_foreign'] = false;
+
+// Site-wide changes clear the whole page cache, once, after the request.
+$reset();
+Simple_Redis_Cache_Page_Invalidator::option_updated( 'rewrite_rules' );
+Simple_Redis_Cache_Page_Invalidator::acf_saved( 12 );
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'An unrelated option or a post-level ACF save cleared the page cache.' );
+foreach ( array( 'blogname', 'widget_text', 'theme_mods_twentytwentyfive' ) as $site_option ) {
+	$reset();
+	Simple_Redis_Cache_Page_Invalidator::option_updated( $site_option );
+	$assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), "Changing the {$site_option} option did not clear the page cache." );
+	Simple_Redis_Cache_Page_Invalidator::flush_site_change();
+}
+$reset();
+Simple_Redis_Cache_Page_Invalidator::acf_saved( 'options' );
+$assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Saving an ACF options page did not clear the page cache.' );
+Simple_Redis_Cache_Page_Invalidator::option_updated( 'blogname' );
+Simple_Redis_Cache_Page_Invalidator::site_changed();
+$assert( 1 === count( $GLOBALS['src_test_actions']['shutdown'] ?? array() ), 'Several site changes in one request did not schedule exactly one page purge.' );
+Simple_Redis_Cache_Purger::$scopes = array();
+Simple_Redis_Cache_Page_Invalidator::flush_site_change();
+$assert( array( 'page' ) === Simple_Redis_Cache_Purger::$scopes, 'A site change did not clear exactly the page cache.' );
+
+$reset();
+$GLOBALS['src_test_config']['page']['purge_on_site_change'] = false;
+Simple_Redis_Cache_Page_Invalidator::site_changed();
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'A site change cleared the page cache although the option was off.' );
+foreach ( array( 'transition_post_status', 'before_delete_post', 'edited_term', 'delete_term', 'wp_update_nav_menu', 'customize_save_after', 'switch_theme', 'upgrader_process_complete', 'updated_option', 'acf/save_post' ) as $hook ) {
+	$GLOBALS['src_test_actions'] = array();
+	Simple_Redis_Cache_Page_Invalidator::init();
+	$assert( isset( $GLOBALS['src_test_actions'][ $hook ] ), "The {$hook} hook was not registered." );
+}
+
+// Site Editor objects are not public post types but render on every page.
+$GLOBALS['src_test_config']['page']['purge_on_site_change'] = true;
+// A classic menu item deleted on its own fires neither menu hook, only before_delete_post.
+foreach ( array( 'wp_navigation', 'wp_template', 'wp_template_part', 'wp_global_styles', 'wp_block', 'nav_menu_item' ) as $site_type ) {
+	$reset();
+	$site_object = (object) array( 'ID' => 70, 'post_type' => $site_type, 'post_status' => 'publish' );
+	Simple_Redis_Cache_Page_Invalidator::transition_post_status( 'publish', 'publish', $site_object );
+	$assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), "Saving a {$site_type} in the Site Editor did not clear the page cache." );
+	Simple_Redis_Cache_Page_Invalidator::flush_site_change();
+	$reset();
+	Simple_Redis_Cache_Page_Invalidator::before_delete_post( 70, $site_object );
+	$assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), "Deleting a {$site_type} did not clear the page cache." );
+	Simple_Redis_Cache_Page_Invalidator::flush_site_change();
+}
+
+// Installing a plugin or theme changes nothing until it is activated; updating does.
+$reset();
+Simple_Redis_Cache_Page_Invalidator::upgraded( null, array( 'action' => 'install', 'type' => 'plugin' ) );
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Installing a plugin cleared the page cache.' );
+Simple_Redis_Cache_Page_Invalidator::upgraded( null, array( 'action' => 'update', 'type' => 'theme' ) );
+$assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Updating a theme did not clear the page cache.' );
+Simple_Redis_Cache_Page_Invalidator::flush_site_change();
+foreach ( array( 'wp_update_nav_menu_item', 'activated_plugin', 'deactivated_plugin', 'edit_terms', 'pre_delete_term' ) as $hook ) {
+	$GLOBALS['src_test_actions'] = array();
+	Simple_Redis_Cache_Page_Invalidator::init();
+	$assert( isset( $GLOBALS['src_test_actions'][ $hook ] ), "The {$hook} hook was not registered." );
+}
+
+// A renamed term's old address is captured before the rename and purged too.
+$reset();
+$GLOBALS['src_test_config']['cloudflare'] = array( 'purge_on_post_update' => true );
+$GLOBALS['src_test_term_link']            = 'https://example.test/category/old-slug/';
+Simple_Redis_Cache_Page_Invalidator::term_changing( 12, 'category' );
+$GLOBALS['src_test_term_link']            = 'https://example.test/category/new-slug/';
+Simple_Redis_Cache_Page_Invalidator::term_changed( 12, 112, 'category' );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$purged = (array) Simple_Redis_Cache_Cloudflare::$purged;
+$assert( in_array( 'https://example.test/category/old-slug/', $purged, true ), 'The pre-rename address of a term archive was not purged from Cloudflare.' );
+$assert( in_array( 'https://example.test/category/new-slug/', $purged, true ), 'The new address of a renamed term archive was not purged from Cloudflare.' );
+unset( $GLOBALS['src_test_config']['cloudflare'], $GLOBALS['src_test_term_link'] );
+
+echo "OK: content, listing, term and site changes invalidate the right pages while failing open.\n";

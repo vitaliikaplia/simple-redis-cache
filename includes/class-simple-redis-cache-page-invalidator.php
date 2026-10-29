@@ -19,11 +19,64 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	 * address the CDN actually holds, and shutdown runs after the change.
 	 */
 	private static array $pending_cloudflare_urls = array();
+	/** Whether the shared listing token (home, archives, search, 404) must change. */
+	private static bool $pending_listing = false;
+	/** @var array<string, true> Post types whose archive lists the changed content. */
+	private static array $pending_post_types = array();
+	/** @var array<string, true> Term archive addresses captured before a rename or deletion. */
+	private static array $pending_cloudflare_term_urls = array();
 	private static bool $shutdown_scheduled = false;
+	private static bool $site_purge_scheduled = false;
+
+	/**
+	 * Non-public post types the Site Editor saves: navigation menus, templates and
+	 * template parts, global styles and synced patterns. Each renders on many
+	 * pages at once, so a change clears the whole page cache.
+	 */
+	private const SITE_POST_TYPES = array( 'wp_navigation', 'wp_template', 'wp_template_part', 'wp_global_styles', 'wp_block', 'nav_menu_item' );
+
+	/**
+	 * Site-wide settings whose change alters every rendered page, so they clear
+	 * the whole HTML page cache rather than individual entries.
+	 */
+	private const SITE_OPTIONS = array(
+		'blogname',
+		'blogdescription',
+		'show_on_front',
+		'page_on_front',
+		'page_for_posts',
+		'posts_per_page',
+		'permalink_structure',
+		'category_base',
+		'tag_base',
+		'date_format',
+		'time_format',
+		'start_of_week',
+		'timezone_string',
+		'gmt_offset',
+		'WPLANG',
+		'site_icon',
+		'sidebars_widgets',
+	);
 
 	public static function init(): void {
 		add_action( 'post_updated', array( self::class, 'post_updated' ), 10, 3 );
 		add_action( 'set_object_terms', array( self::class, 'set_object_terms' ), 10, 6 );
+		// Fires for scheduled publishing too, which changes status without post_updated.
+		add_action( 'transition_post_status', array( self::class, 'transition_post_status' ), 10, 3 );
+		add_action( 'before_delete_post', array( self::class, 'before_delete_post' ), 10, 2 );
+		// edit_terms fires before the database changes; edit_term already after.
+		add_action( 'edit_terms', array( self::class, 'term_changing' ), 10, 2 );
+		add_action( 'pre_delete_term', array( self::class, 'term_deleting' ), 10, 2 );
+		add_action( 'edited_term', array( self::class, 'term_changed' ), 10, 3 );
+		add_action( 'delete_term', array( self::class, 'term_deleted' ), 10, 5 );
+
+		foreach ( array( 'wp_update_nav_menu', 'wp_delete_nav_menu', 'wp_update_nav_menu_item', 'customize_save_after', 'switch_theme', 'activated_plugin', 'deactivated_plugin' ) as $hook ) {
+			add_action( $hook, array( self::class, 'site_changed' ) );
+		}
+		add_action( 'upgrader_process_complete', array( self::class, 'upgraded' ), 10, 2 );
+		add_action( 'updated_option', array( self::class, 'option_updated' ) );
+		add_action( 'acf/save_post', array( self::class, 'acf_saved' ) );
 	}
 
 	/**
@@ -56,6 +109,11 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		 * would clear an address the CDN never cached and leave the live one served.
 		 */
 		self::remember_cloudflare_url( $post_before, $config );
+
+		// Listing pages show published entries only, so a draft edit leaves them be.
+		if ( self::is_public_post( $post_before ) || self::is_public_post( $post_after ) ) {
+			self::queue_listing( $post_type, $config );
+		}
 
 		$translation_ids = self::translation_ids( $post_id, $post_type );
 		foreach ( $translation_ids as $translation_id ) {
@@ -119,10 +177,160 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		self::schedule_flush();
 	}
 
+	/**
+	 * Catch every status change into or out of public view, including scheduled
+	 * publishing: wp_publish_post() changes the status directly and never fires
+	 * post_updated.
+	 *
+	 * @param string  $new_status
+	 * @param string  $old_status
+	 * @param WP_Post $post
+	 */
+	public static function transition_post_status( mixed $new_status, mixed $old_status, mixed $post ): void {
+		if ( ! is_object( $post ) || ( ! self::is_public_status( (string) $new_status ) && ! self::is_public_status( (string) $old_status ) ) ) {
+			return;
+		}
+
+		if ( in_array( (string) ( $post->post_type ?? '' ), self::SITE_POST_TYPES, true ) ) {
+			self::site_changed();
+			return;
+		}
+
+		self::queue_post( (int) ( $post->ID ?? 0 ), (string) ( $post->post_type ?? '' ) );
+	}
+
+	/**
+	 * Queue a published post that is about to be deleted outright. Its terms and
+	 * public address are only known before core removes them.
+	 *
+	 * @param int     $post_id
+	 * @param WP_Post $post
+	 */
+	public static function before_delete_post( int $post_id, mixed $post = null ): void {
+		$post = is_object( $post ) ? $post : get_post( $post_id );
+		if ( ! is_object( $post ) || ! self::is_public_post( $post ) ) {
+			return;
+		}
+		if ( in_array( (string) ( $post->post_type ?? '' ), self::SITE_POST_TYPES, true ) ) {
+			self::site_changed();
+			return;
+		}
+
+		$config = Simple_Redis_Cache_Config::get();
+		if ( self::is_enabled( $config ) ) {
+			self::remember_cloudflare_url( $post, $config );
+		}
+		self::queue_post( $post_id, (string) ( $post->post_type ?? '' ) );
+	}
+
+	/**
+	 * Remember a term's public address before its slug or parent changes, so the
+	 * edge copy under the old address is purged too.
+	 *
+	 * @param int    $term_id
+	 * @param string $taxonomy
+	 */
+	public static function term_changing( int $term_id, string $taxonomy ): void {
+		self::remember_term_url( $term_id, $taxonomy );
+	}
+
+	/**
+	 * @param int    $term_id
+	 * @param string $taxonomy
+	 */
+	public static function term_deleting( int $term_id, string $taxonomy ): void {
+		self::remember_term_url( $term_id, $taxonomy );
+	}
+
+	/**
+	 * A renamed or moved term changes its own archive and every listing that
+	 * prints its name.
+	 *
+	 * @param int    $term_id
+	 * @param int    $term_taxonomy_id
+	 * @param string $taxonomy
+	 */
+	public static function term_changed( int $term_id, int $term_taxonomy_id, string $taxonomy ): void {
+		unset( $term_id );
+		self::queue_term( $term_taxonomy_id, $taxonomy, get_term_by( 'term_taxonomy_id', $term_taxonomy_id, $taxonomy ) );
+	}
+
+	/**
+	 * @param int    $term_id
+	 * @param int    $term_taxonomy_id
+	 * @param string $taxonomy
+	 * @param mixed  $deleted_term Copy of the deleted term.
+	 */
+	public static function term_deleted( int $term_id, int $term_taxonomy_id, string $taxonomy, mixed $deleted_term = null, mixed $object_ids = null ): void {
+		unset( $term_id, $object_ids );
+		self::queue_term( $term_taxonomy_id, $taxonomy, $deleted_term );
+	}
+
+	/**
+	 * Updates change what every page renders; installing a plugin or theme does
+	 * not, until it is activated.
+	 *
+	 * @param mixed                $upgrader
+	 * @param array<string, mixed> $hook_extra
+	 */
+	public static function upgraded( mixed $upgrader, mixed $hook_extra = array() ): void {
+		unset( $upgrader );
+		if ( is_array( $hook_extra ) && 'update' === ( $hook_extra['action'] ?? '' ) ) {
+			self::site_changed();
+		}
+	}
+
+	/** Menus, widgets, the Customizer, the theme or an update changed every page. */
+	public static function site_changed(): void {
+		$config = Simple_Redis_Cache_Config::get();
+		if ( empty( $config['page']['enabled'] ) || empty( $config['page']['purge_on_site_change'] ) || self::$site_purge_scheduled ) {
+			return;
+		}
+
+		self::$site_purge_scheduled = true;
+		add_action( 'shutdown', array( self::class, 'flush_site_change' ), PHP_INT_MAX );
+	}
+
+	/** @param string $option */
+	public static function option_updated( mixed $option ): void {
+		$option = (string) $option;
+		if ( in_array( $option, self::SITE_OPTIONS, true ) || str_starts_with( $option, 'widget_' ) || str_starts_with( $option, 'theme_mods_' ) ) {
+			self::site_changed();
+		}
+	}
+
+	/**
+	 * ACF options pages save under an "options"-style ID rather than a post ID,
+	 * and their fields typically render in headers and footers on every page.
+	 *
+	 * @param mixed $post_id
+	 */
+	public static function acf_saved( mixed $post_id ): void {
+		if ( is_string( $post_id ) && str_starts_with( $post_id, 'option' ) ) {
+			self::site_changed();
+		}
+	}
+
+	/** Clear the whole HTML page cache once, after the request's changes are done. */
+	public static function flush_site_change(): void {
+		self::$site_purge_scheduled = false;
+		$result = Simple_Redis_Cache_Purger::purge( 'page' );
+		if ( is_wp_error( $result ) ) {
+			Simple_Redis_Cache_Admin::queue_notice(
+				sprintf(
+					/* translators: %s: Redis or Cloudflare error. */
+					__( 'The site changed, but the HTML page cache could not be cleared: %s', 'simple-redis-cache' ),
+					implode( ' ', $result->get_error_messages() )
+				),
+				'warning'
+			);
+		}
+	}
+
 	/** Apply one atomic Redis version change after every save hook has completed. */
 	public static function flush(): void {
 		self::$shutdown_scheduled = false;
-		if ( empty( self::$pending_post_ids ) && empty( self::$pending_term_taxonomy_ids ) ) {
+		if ( empty( self::$pending_post_ids ) && empty( self::$pending_term_taxonomy_ids ) && ! self::$pending_listing ) {
 			return;
 		}
 
@@ -159,11 +367,18 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		if ( ! empty( $config['page']['invalidate_term_archives_on_post_update'] ) ) {
 			$resources['term'] = array_keys( self::$pending_term_taxonomy_ids );
 		}
+		if ( self::$pending_listing && ! empty( $config['page']['invalidate_listings_on_post_update'] ) ) {
+			$resources['list'] = array( Simple_Redis_Cache_Page_Capture::LISTING_RESOURCE_ID );
+		}
 		/* Addresses captured before the update survive the reset below. */
 		$captured_urls = array_keys( self::$pending_cloudflare_urls );
+		if ( ! empty( $resources['term'] ) ) {
+			$captured_terms = array_keys( self::$pending_cloudflare_term_urls );
+		}
+		$post_types    = array_keys( self::$pending_post_types );
 		self::reset_pending();
 
-		if ( empty( $resources['post'] ) && empty( $resources['term'] ) ) {
+		if ( empty( $resources['post'] ) && empty( $resources['term'] ) && empty( $resources['list'] ) ) {
 			return;
 		}
 
@@ -177,7 +392,7 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		 * s-maxage.
 		 */
 		if ( false !== $bumped ) {
-			self::purge_cloudflare_urls( $resources, $captured_urls, $config );
+			self::purge_cloudflare_urls( $resources, $captured_urls, $post_types, $config, $captured_terms ?? array() );
 			return;
 		}
 
@@ -200,11 +415,13 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	 * Redis side deliberately leaves alone. Failure is fail-open with a warning,
 	 * exactly like a failed Redis invalidation.
 	 *
-	 * @param array{post?:int[],term?:int[]} $resources
-	 * @param string[]                       $captured_urls Addresses seen before the update.
-	 * @param array<string, mixed>           $config
+	 * @param array{post?:int[],term?:int[],list?:int[]} $resources
+	 * @param string[]                                   $captured_urls Addresses seen before the update.
+	 * @param string[]                                   $post_types    Types of the changed posts.
+	 * @param array<string, mixed>                       $config
+	 * @param string[]                                   $term_urls     Term addresses seen before a rename or deletion.
 	 */
-	private static function purge_cloudflare_urls( array $resources, array $captured_urls, array $config ): void {
+	private static function purge_cloudflare_urls( array $resources, array $captured_urls, array $post_types, array $config, array $term_urls = array() ): void {
 		if ( ! Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_post_update', $config ) ) {
 			return;
 		}
@@ -233,6 +450,11 @@ final class Simple_Redis_Cache_Page_Invalidator {
 				$urls[] = $link;
 			}
 		}
+
+		if ( ! empty( $resources['list'] ) ) {
+			$urls = array_merge( $urls, self::listing_urls( $post_types ) );
+		}
+		$urls = array_merge( $urls, $term_urls );
 
 		if ( empty( $urls ) ) {
 			return;
@@ -307,10 +529,139 @@ final class Simple_Redis_Cache_Page_Invalidator {
 
 	/** @param array<string, mixed> $config */
 	private static function is_enabled( array $config ): bool {
-		return ! empty( $config['page']['enabled'] ) && (
+		return ! empty( $config['page']['enabled'] ) && ! Simple_Redis_Cache_Config::is_foreign( $config ) && (
 			! empty( $config['page']['invalidate_on_post_update'] ) ||
-			! empty( $config['page']['invalidate_term_archives_on_post_update'] )
+			! empty( $config['page']['invalidate_term_archives_on_post_update'] ) ||
+			! empty( $config['page']['invalidate_listings_on_post_update'] )
 		);
+	}
+
+	/**
+	 * Queue a post, its translations and current terms, and the listing token.
+	 * Callers have established that the change affects public output.
+	 */
+	private static function queue_post( int $post_id, string $post_type ): void {
+		$config = Simple_Redis_Cache_Config::get();
+		if ( ! self::is_enabled( $config ) || self::is_ignored_post( $post_id ) || ! self::is_frontend_post_type( $post_type ) ) {
+			return;
+		}
+
+		self::queue_listing( $post_type, $config );
+		foreach ( self::translation_ids( $post_id, $post_type ) as $translation_id ) {
+			$translation_type = get_post_type( $translation_id );
+			if ( ! is_string( $translation_type ) || ! self::is_frontend_post_type( $translation_type ) ) {
+				continue;
+			}
+
+			self::$pending_post_ids[ $translation_id ] = true;
+			if ( ! empty( $config['page']['invalidate_term_archives_on_post_update'] ) ) {
+				self::collect_current_terms( $translation_id, $translation_type );
+			}
+		}
+
+		self::schedule_flush();
+	}
+
+	/** @param array<string, mixed> $config */
+	private static function queue_listing( string $post_type, array $config ): void {
+		if ( empty( $config['page']['invalidate_listings_on_post_update'] ) ) {
+			return;
+		}
+
+		self::$pending_listing = true;
+		if ( '' !== $post_type ) {
+			self::$pending_post_types[ $post_type ] = true;
+		}
+		self::schedule_flush();
+	}
+
+	/** Queue a changed or deleted public term, its parents and the listing token. */
+	private static function queue_term( int $term_taxonomy_id, string $taxonomy, mixed $term ): void {
+		$config = Simple_Redis_Cache_Config::get();
+		if ( ! self::is_enabled( $config ) || ! self::is_viewable_taxonomy( $taxonomy ) ) {
+			return;
+		}
+
+		self::queue_listing( '', $config );
+		if ( ! empty( $config['page']['invalidate_term_archives_on_post_update'] ) && $term_taxonomy_id > 0 ) {
+			self::$pending_term_taxonomy_ids[ $term_taxonomy_id ] = true;
+			self::collect_term( $term, $taxonomy );
+			// A deleted term has no ancestors left to look up; its parent is on the copy.
+			$parent = is_object( $term ) ? (int) ( $term->parent ?? 0 ) : 0;
+			if ( $parent > 0 ) {
+				self::collect_term( get_term( $parent, $taxonomy ), $taxonomy );
+			}
+		}
+		self::schedule_flush();
+	}
+
+	/** Record a public term archive address while it still resolves. */
+	private static function remember_term_url( int $term_id, string $taxonomy ): void {
+		$config = Simple_Redis_Cache_Config::get();
+		if (
+			! self::is_enabled( $config ) ||
+			empty( $config['page']['invalidate_term_archives_on_post_update'] ) ||
+			! Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_post_update', $config ) ||
+			! self::is_viewable_taxonomy( $taxonomy )
+		) {
+			return;
+		}
+
+		$term = get_term( $term_id, $taxonomy );
+		$link = is_object( $term ) && ! is_wp_error( $term ) ? get_term_link( $term ) : '';
+		if ( is_string( $link ) && '' !== $link ) {
+			self::$pending_cloudflare_term_urls[ $link ] = true;
+		}
+	}
+
+	/** @param mixed $post */
+	private static function is_public_post( mixed $post ): bool {
+		return is_object( $post ) && self::is_public_status( (string) ( $post->post_status ?? '' ) );
+	}
+
+	private static function is_public_status( string $status ): bool {
+		$status_object = '' !== $status ? get_post_status_object( $status ) : null;
+		return is_object( $status_object ) && is_post_status_viewable( $status_object );
+	}
+
+	/**
+	 * Exact addresses of the listing pages a CDN may hold: the home page of every
+	 * language WPML or Polylang knows, the posts page and the changed types'
+	 * archives. Deeper pagination is out of reach of exact-URL purging.
+	 *
+	 * @param string[] $post_types
+	 * @return string[]
+	 */
+	private static function listing_urls( array $post_types ): array {
+		$urls = array( home_url( '/' ) );
+
+		$posts_page = (int) get_option( 'page_for_posts' );
+		if ( 'page' === get_option( 'show_on_front' ) && $posts_page > 0 ) {
+			$urls[] = (string) get_permalink( $posts_page );
+		}
+
+		foreach ( $post_types as $post_type ) {
+			$archive = get_post_type_archive_link( $post_type );
+			if ( is_string( $archive ) ) {
+				$urls[] = $archive;
+			}
+		}
+
+		if ( function_exists( 'pll_languages_list' ) && function_exists( 'pll_home_url' ) ) {
+			foreach ( (array) pll_languages_list() as $language ) {
+				$urls[] = (string) pll_home_url( (string) $language );
+			}
+		}
+
+		if ( function_exists( 'has_filter' ) && has_filter( 'wpml_active_languages' ) ) {
+			foreach ( (array) apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) ) as $language ) {
+				if ( is_array( $language ) && is_string( $language['url'] ?? null ) ) {
+					$urls[] = $language['url'];
+				}
+			}
+		}
+
+		return array_values( array_filter( $urls, 'strlen' ) );
 	}
 
 	private static function is_ignored_post( int $post_id ): bool {
@@ -424,6 +775,9 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		self::$pending_post_ids          = array();
 		self::$pending_term_taxonomy_ids = array();
 		self::$pending_cloudflare_urls   = array();
+		self::$pending_listing           = false;
+		self::$pending_post_types        = array();
+		self::$pending_cloudflare_term_urls = array();
 	}
 
 	/**

@@ -8,6 +8,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class Simple_Redis_Cache_Page_Capture {
+	/** The token shared by every listing page: home, generic archives, search, 404. */
+	public const LISTING_RESOURCE_ID = 1;
+
+	/** A stored payload larger than this is not worth the Redis memory. */
+	private const MAX_PAYLOAD_BYTES = 2097152;
+
+	/**
+	 * Vary-cookie variants one URL may hold per page generation. Real language
+	 * cookies give one variant per language however many of them a plugin sets;
+	 * the cap stops arbitrary values and their combinations from minting keys.
+	 */
+	private const MAX_VARIANTS_PER_URL = 16;
+
 	/** @var array<string, mixed> */
 	private array $context;
 	/** @var array<string, mixed> */
@@ -16,9 +29,10 @@ final class Simple_Redis_Cache_Page_Capture {
 	private bool $finalized = false;
 	private bool $released = false;
 	private bool $content_version_prepared = false;
-	private string $content_resource_type = '';
-	private int $content_resource_id = 0;
-	private string $content_version = '';
+	/** @var array<int, array{type:string,id:int,version:string}> Resources snapshotted before rendering. */
+	private array $content_resources = array();
+	/** Whether the vary-cookie values name one of the site's languages; null until checked. */
+	private ?bool $vary_values_known = null;
 
 	/** @param array<string, mixed> $context */
 	private function __construct( array $context ) {
@@ -53,6 +67,19 @@ final class Simple_Redis_Cache_Page_Capture {
 				$capture->prepare_content_version();
 			} elseif ( function_exists( 'add_action' ) ) {
 				add_action( 'wp', array( $capture, 'prepare_content_version' ), PHP_INT_MAX );
+			}
+		}
+
+		/*
+		 * Language plugins are asked before rendering, never from the output
+		 * handler: PHP forbids output buffering inside one, and any third-party
+		 * code that starts a buffer there would be a fatal error.
+		 */
+		if ( ! empty( $context['vary_values'] ) ) {
+			if ( ! empty( $context['deferred_logged_in'] ) ) {
+				$capture->prepare_vary_values();
+			} elseif ( function_exists( 'add_action' ) ) {
+				add_action( 'wp', array( $capture, 'prepare_vary_values' ), PHP_INT_MAX );
 			}
 		}
 
@@ -129,8 +156,9 @@ final class Simple_Redis_Cache_Page_Capture {
 	}
 
 	/**
-	 * Snapshot the queried post or taxonomy term's content version after the main
-	 * query is known and before its template renders. The final write rechecks it.
+	 * Snapshot the content versions of everything this page is bound to after the
+	 * main query is known and before its template renders. The final write
+	 * rechecks each of them atomically.
 	 *
 	 * @param mixed $wp Unused value supplied by the WordPress `wp` action.
 	 */
@@ -140,21 +168,31 @@ final class Simple_Redis_Cache_Page_Capture {
 			return;
 		}
 		$this->content_version_prepared = true;
-		$resource = $this->queried_content_resource();
-		if ( null === $resource ) {
-			return;
-		}
-		$this->content_resource_type = $resource['type'];
-		$this->content_resource_id   = $resource['id'];
 
 		$redis = $this->context['redis'] ?? null;
-		if ( ! $redis instanceof Simple_Redis_Cache_Redis ) {
-			return;
+		foreach ( $this->queried_content_resources() as $resource ) {
+			$version = $redis instanceof Simple_Redis_Cache_Redis
+				? $redis->page_content_version( $resource['type'], $resource['id'] )
+				: false;
+			// An empty version makes maybe_store() refuse: an unverifiable binding is no binding.
+			$this->content_resources[] = array(
+				'type'    => $resource['type'],
+				'id'      => $resource['id'],
+				'version' => is_string( $version ) ? $version : '',
+			);
 		}
+	}
 
-		$version = $redis->page_content_version( $this->content_resource_type, $this->content_resource_id );
-		if ( is_string( $version ) ) {
-			$this->content_version = $version;
+	/**
+	 * Decide, while WordPress and its language plugins are fully loaded, whether
+	 * this request's vary-cookie values name one of the site's languages.
+	 *
+	 * @param mixed $wp Unused value supplied by the WordPress `wp` action.
+	 */
+	public function prepare_vary_values( mixed $wp = null ): void {
+		unset( $wp );
+		if ( null === $this->vary_values_known ) {
+			$this->vary_values_known = self::known_vary_values( array_map( 'strval', (array) ( $this->context['vary_values'] ?? array() ) ) );
 		}
 	}
 
@@ -211,30 +249,36 @@ final class Simple_Redis_Cache_Page_Capture {
 			return;
 		}
 
-		$resource_type    = '';
-		$resource_id      = 0;
-		$resource_version = '';
+		$resources = array();
 		if ( $this->uses_content_versions() ) {
 			if ( ! $this->content_version_prepared ) {
 				return;
 			}
 
-			$resource = $this->queried_content_resource();
-			if (
-				( null === $resource && '' !== $this->content_resource_type ) ||
-				( null !== $resource && ( $resource['type'] !== $this->content_resource_type || $resource['id'] !== $this->content_resource_id ) ) ||
-				( null !== $resource && '' === $this->content_version )
-			) {
+			// The page must still be bound to exactly what was snapshotted, and every
+			// snapshot must have produced a version.
+			$current = $this->queried_content_resources();
+			$snapped = array_map(
+				static fn( array $resource ): array => array( 'type' => $resource['type'], 'id' => $resource['id'] ),
+				$this->content_resources
+			);
+			if ( $current !== $snapped ) {
 				return;
 			}
-			if ( null !== $resource ) {
-				$resource_type    = $resource['type'];
-				$resource_id      = $resource['id'];
-				$resource_version = $this->content_version;
+			foreach ( $this->content_resources as $resource ) {
+				if ( '' === $resource['version'] ) {
+					return;
+				}
 			}
+			$resources = $this->content_resources;
 		}
 
 		if ( ! self::is_complete_html( $body ) ) {
+			return;
+		}
+
+		// Unchecked counts as unknown: the `wp` action never ran for this response.
+		if ( ! empty( $this->context['vary_values'] ) && true !== $this->vary_values_known ) {
 			return;
 		}
 
@@ -253,90 +297,213 @@ final class Simple_Redis_Cache_Page_Capture {
 			return;
 		}
 
-		$payload = serialize(
+		/*
+		 * Compress the body when it helps: a rendered page shrinks several-fold, and
+		 * every anonymous 404, search and vary variant is a full page in memory.
+		 */
+		$encoding    = '';
+		$stored_body = $body;
+		if ( function_exists( 'gzdeflate' ) ) {
+			$deflated = gzdeflate( $body, 6 );
+			if ( is_string( $deflated ) && strlen( $deflated ) < strlen( $body ) ) {
+				$encoding    = 'deflate';
+				$stored_body = $deflated;
+			}
+		}
+
+		$serialized = serialize(
 			array(
-				'version'   => 3,
+				'version'   => 4,
 				'status'    => $status,
 				'type'      => $type,
 				'headers'   => $headers,
-				'body'      => $body,
+				'body'      => $stored_body,
+				'encoding'  => $encoding,
 				'stored_at' => time(),
-				'resource_type' => $resource_type,
-				'resource_id' => $resource_id,
-				'resource_version' => $resource_version,
+				'resources' => $resources,
 			)
 		);
 
-		$cache_key = (string) ( $this->context['cache_key'] ?? '' );
-		$lock_key  = (string) ( $this->context['lock_key'] ?? '' );
+		$config     = (array) ( $this->context['config'] ?? array() );
+		$cache_key  = (string) ( $this->context['cache_key'] ?? '' );
+		$lock_key   = (string) ( $this->context['lock_key'] ?? '' );
 		$lock_token = (string) ( $this->context['lock_token'] ?? '' );
-		$ttl       = min( 31 * DAY_IN_SECONDS, max( 1, (int) ( $this->page_config['ttl'] ?? HOUR_IN_SECONDS ) ) );
 		if ( '' === $cache_key || '' === $lock_key || '' === $lock_token ) {
 			return;
 		}
 
-		// Store only while this request still owns the stampede lock, then
-		// release that exact lock atomically. A slow renderer can never delete or
-		// overwrite a newer request's lock/value after its own lock expires.
-		$script = <<<'LUA'
-if redis.call('get', KEYS[1]) == ARGV[1] then
-	redis.call('set', KEYS[2], ARGV[2], 'EX', ARGV[3])
-	redis.call('del', KEYS[1])
-	return 1
-end
-return 0
-LUA;
-		$arguments = array( $lock_key, $cache_key, $lock_token, $payload, (string) $ttl );
-		$key_count = 2;
-
-		if ( $resource_id > 0 ) {
-			$config       = (array) ( $this->context['config'] ?? array() );
-			$versions_key = Simple_Redis_Cache_Early_Config::page_content_versions_key( $config );
-			$script       = <<<'LUA'
-if redis.call('get', KEYS[1]) ~= ARGV[1] then
-	return 0
-end
-if redis.call('hget', KEYS[3], ARGV[4]) ~= ARGV[5] then
-	redis.call('del', KEYS[1])
-	return -1
-end
-redis.call('set', KEYS[2], ARGV[2], 'EX', ARGV[3])
-redis.call('del', KEYS[1])
-return 1
-LUA;
-			$arguments = array( $lock_key, $cache_key, $versions_key, $lock_token, $payload, (string) $ttl, $resource_type . ':' . $resource_id, $resource_version );
-			$key_count = 3;
+		$payload = Simple_Redis_Cache_Early_Config::PAGE_PAYLOAD_PREFIX
+			. Simple_Redis_Cache_Early_Config::page_payload_mac( $cache_key, $serialized, (string) ( $config['site']['secret'] ?? '' ) )
+			. $serialized;
+		if ( strlen( $payload ) > self::MAX_PAYLOAD_BYTES ) {
+			return;
 		}
 
-		$result = $client->eval( $script, $arguments, $key_count );
+		$ttl = min( 31 * DAY_IN_SECONDS, max( 1, (int) ( $this->page_config['ttl'] ?? HOUR_IN_SECONDS ) ) );
+		if ( in_array( $type, array( '404', 'search' ), true ) ) {
+			$ttl = min( $ttl, Simple_Redis_Cache_Early_Config::SHORT_PAGE_TTL );
+		}
 
-		if ( in_array( (int) $result, array( -1, 1 ), true ) ) {
+		/*
+		 * One atomic script: refuse if any bound content token changed since the
+		 * snapshot (an update during rendering), refuse a new vary-cookie variant
+		 * once its URL already holds MAX_VARIANTS_PER_URL in this generation,
+		 * otherwise store. The renderer that took the lock stores even if the lock expired
+		 * meanwhile — under load a render can outlast it, and refusing would leave
+		 * the cache permanently cold. It only ever deletes the lock it still owns.
+		 */
+		$script = <<<'LUA'
+local owns = redis.call('get', KEYS[1]) == ARGV[1]
+local count = tonumber(ARGV[4])
+local index = 6
+for i = 1, count do
+	if redis.call('hget', KEYS[3], ARGV[index]) ~= ARGV[index + 1] then
+		if owns then redis.call('del', KEYS[1]) end
+		return -1
+	end
+	index = index + 2
+end
+if KEYS[4] and redis.call('sismember', KEYS[4], ARGV[index]) == 0 then
+	if redis.call('scard', KEYS[4]) >= tonumber(ARGV[5]) then
+		if owns then redis.call('del', KEYS[1]) end
+		return -2
+	end
+	redis.call('sadd', KEYS[4], ARGV[index])
+	redis.call('expire', KEYS[4], 2678400)
+end
+redis.call('set', KEYS[2], ARGV[2], 'EX', ARGV[3])
+if owns then redis.call('del', KEYS[1]) end
+return 1
+LUA;
+
+		$keys      = array( $lock_key, $cache_key, Simple_Redis_Cache_Early_Config::page_content_versions_key( $config ) );
+		$arguments = array( $lock_token, $payload, (string) $ttl, (string) count( $resources ), (string) self::MAX_VARIANTS_PER_URL );
+		foreach ( $resources as $resource ) {
+			$arguments[] = $resource['type'] . ':' . $resource['id'];
+			$arguments[] = $resource['version'];
+		}
+
+		$variant_registry = (string) ( $this->context['variant_registry'] ?? '' );
+		if ( '' !== $variant_registry ) {
+			$keys[]      = $variant_registry;
+			$arguments[] = substr( hash( 'sha256', $cache_key ), 0, 32 );
+		}
+
+		$result = $client->eval( $script, array_merge( $keys, $arguments ), count( $keys ) );
+
+		if ( in_array( (int) $result, array( -2, -1, 1 ), true ) ) {
 			$this->released = true;
 		}
 	}
 
-	private function uses_content_versions(): bool {
-		return ! empty( $this->page_config['invalidate_on_post_update'] ) || ! empty( $this->page_config['invalidate_term_archives_on_post_update'] );
-	}
+	/**
+	 * Whether the vary-cookie values together name one language the site serves.
+	 *
+	 * Each language is a group of every spelling a plugin may store in a cookie:
+	 * Polylang's slug, locale and W3C tag; the code, locale and tag WPML and WP-LOC
+	 * report through wpml_active_languages; WP-LOC's own slug and locale. Groups
+	 * that share a spelling are one language. The simple_redis_cache_vary_cookie_values
+	 * filter can add groups for other plugins. All values must fall in one group,
+	 * so a mix such as an English slug with a Ukrainian locale — a combination no
+	 * real visitor carries — is never stored. When no source knows any language,
+	 * the per-URL variant cap is the only bound.
+	 *
+	 * @param array<string, string> $vary_values
+	 */
+	private static function known_vary_values( array $vary_values ): bool {
+		$groups = array();
 
-	/** @return array{type:string,id:int}|null */
-	private function queried_content_resource(): ?array {
-		if ( ! function_exists( 'get_queried_object' ) ) {
-			return null;
+		if ( function_exists( 'pll_languages_list' ) ) {
+			$fields = array();
+			foreach ( array( 'slug', 'locale', 'w3c' ) as $field ) {
+				$fields[] = array_values( (array) pll_languages_list( array( 'fields' => $field ) ) );
+			}
+			foreach ( $fields[0] as $index => $slug ) {
+				$groups[] = array( $slug, $fields[1][ $index ] ?? '', $fields[2][ $index ] ?? '' );
+			}
 		}
 
-		$object = get_queried_object();
+		if ( function_exists( 'has_filter' ) && function_exists( 'apply_filters' ) && has_filter( 'wpml_active_languages' ) ) {
+			foreach ( (array) apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) ) as $code => $language ) {
+				$group = array( $code );
+				foreach ( array( 'code', 'language_code', 'default_locale', 'tag' ) as $field ) {
+					if ( is_array( $language ) && is_scalar( $language[ $field ] ?? null ) ) {
+						$group[] = $language[ $field ];
+					}
+				}
+				$groups[] = $group;
+			}
+		}
+
+		if ( class_exists( 'WP_LOC_Languages', false ) && method_exists( 'WP_LOC_Languages', 'get_active_languages' ) ) {
+			foreach ( (array) WP_LOC_Languages::get_active_languages() as $slug => $language ) {
+				$groups[] = array( $slug, is_array( $language ) && is_scalar( $language['locale'] ?? null ) ? $language['locale'] : '' );
+			}
+		}
+
+		if ( function_exists( 'apply_filters' ) ) {
+			$groups = (array) apply_filters( 'simple_redis_cache_vary_cookie_values', $groups, $vary_values );
+		}
+
+		// Merge groups that share a spelling, so every plugin's view of one language joins up.
+		$languages = array();
+		foreach ( $groups as $group ) {
+			$group = array_filter( array_map( 'strval', is_array( $group ) ? $group : array( $group ) ), 'strlen' );
+			foreach ( $languages as $index => $language ) {
+				if ( array_intersect( $language, $group ) ) {
+					$group = array_merge( $group, $language );
+					unset( $languages[ $index ] );
+				}
+			}
+			if ( ! empty( $group ) ) {
+				$languages[] = array_values( array_unique( $group ) );
+			}
+		}
+
+		if ( empty( $languages ) ) {
+			return true;
+		}
+
+		foreach ( $languages as $language ) {
+			if ( ! array_diff( $vary_values, $language ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private function uses_content_versions(): bool {
+		return ! empty( $this->page_config['invalidate_on_post_update'] ) ||
+			! empty( $this->page_config['invalidate_term_archives_on_post_update'] ) ||
+			! empty( $this->page_config['invalidate_listings_on_post_update'] );
+	}
+
+	/**
+	 * Everything the current page's content depends on, in a stable order: the
+	 * queried post or taxonomy term, plus the shared listing token for pages that
+	 * list content rather than being one entry — the front page and posts page,
+	 * generic archives, search results and 404s. A taxonomy archive uses its own
+	 * term token when that option is enabled and the listing token otherwise.
+	 *
+	 * @return array<int, array{type:string,id:int}>
+	 */
+	private function queried_content_resources(): array {
+		$resources = array();
+		$object    = function_exists( 'get_queried_object' ) ? get_queried_object() : null;
+
 		if ( ! empty( $this->page_config['invalidate_on_post_update'] ) && class_exists( 'WP_Post', false ) && $object instanceof WP_Post ) {
 			$post_id   = (int) $object->ID;
 			$post_type = $post_id > 0 && function_exists( 'get_post_type' ) ? get_post_type( $post_id ) : false;
 			if ( is_string( $post_type ) && '' !== $post_type && function_exists( 'get_post_type_object' ) && function_exists( 'is_post_type_viewable' ) ) {
 				$post_type_object = get_post_type_object( $post_type );
 				if ( is_object( $post_type_object ) && is_post_type_viewable( $post_type_object ) ) {
-					return array( 'type' => 'post', 'id' => $post_id );
+					$resources[] = array( 'type' => 'post', 'id' => $post_id );
 				}
 			}
 		}
 
+		$term_bound = false;
 		if (
 			! empty( $this->page_config['invalidate_term_archives_on_post_update'] ) &&
 			class_exists( 'WP_Term', false ) &&
@@ -347,11 +514,19 @@ LUA;
 			$term_taxonomy_id = (int) $object->term_taxonomy_id;
 			$taxonomy_object  = get_taxonomy( (string) $object->taxonomy );
 			if ( $term_taxonomy_id > 0 && is_object( $taxonomy_object ) && is_taxonomy_viewable( $taxonomy_object ) ) {
-				return array( 'type' => 'term', 'id' => $term_taxonomy_id );
+				$resources[] = array( 'type' => 'term', 'id' => $term_taxonomy_id );
+				$term_bound  = true;
 			}
 		}
 
-		return null;
+		if ( ! empty( $this->page_config['invalidate_listings_on_post_update'] ) ) {
+			$type = $this->page_type();
+			if ( in_array( $type, array( 'home', 'search', '404' ), true ) || ( 'archive' === $type && ! $term_bound ) ) {
+				$resources[] = array( 'type' => 'list', 'id' => self::LISTING_RESOURCE_ID );
+			}
+		}
+
+		return $resources;
 	}
 
 	private function page_type(): ?string {

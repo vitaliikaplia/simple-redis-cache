@@ -30,6 +30,9 @@ unset( $simple_redis_cache_dependencies, $simple_redis_cache_dependency );
 
 if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 	final class Simple_Redis_Cache_Advanced_Cache_Loader {
+		/** Refuse to inflate a stored body beyond this many bytes. */
+		private const MAX_INFLATED_BODY = 33554432;
+
 		/** @var array<string, true> Locks whose Page_Capture buffer still intends to write. */
 		private static array $pending_capture_locks = array();
 
@@ -73,7 +76,8 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				return;
 			}
 
-			$redis  = new Simple_Redis_Cache_Redis( $config );
+			// The breaker lets a stalled Redis cost one request, not every request.
+			$redis  = new Simple_Redis_Cache_Redis( $config, true );
 			$client = $redis->client();
 			if ( null === $client ) {
 				self::debug_header( $debug, 'BYPASS' );
@@ -82,6 +86,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 
 			$generation = $redis->generation( 'page' );
 			if ( null !== $redis->error() ) {
+				self::trip_breaker( $redis );
 				self::debug_header( $debug, 'BYPASS' );
 				return;
 			}
@@ -95,7 +100,14 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				'deferred_logged_in' => $request->has_auth_cookie_variant(),
 				'early_ob_level'      => ob_get_level(),
 				'debug_header'        => $debug,
+				'storable'            => $request->is_storable(),
+				'vary_values'         => $request->vary_cookie_values(),
+				// Session-specific logged-in variants are not counted against a URL's cap.
+				'variant_registry'    => empty( $request->vary_cookie_values() ) || $request->has_auth_cookie_variant()
+					? ''
+					: Simple_Redis_Cache_Early_Config::prefix( $config ) . 'page:' . max( 1, $generation ) . ':variants:' . $request->variant_group(),
 			);
+			$secret = (string) ( $config['site']['secret'] ?? '' );
 
 			/*
 			 * Never serve an auth-cookie variant before WordPress has validated the
@@ -110,12 +122,13 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 			try {
 				$stored = $client->get( $cache_key );
 			} catch ( Throwable ) {
+				self::trip_breaker( $redis );
 				self::debug_header( $debug, 'BYPASS' );
 				return;
 			}
 
 			if ( is_string( $stored ) && '' !== $stored ) {
-				$payload = self::decode_payload( $stored, $page );
+				$payload = self::decode_payload( $stored, $page, $cache_key, $secret );
 				if ( null !== $payload ) {
 					$content_version_matches = self::payload_content_version_matches( $payload, $redis, $page );
 					if ( null === $content_version_matches ) {
@@ -126,7 +139,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 						if ( headers_sent() ) {
 							return;
 						}
-						self::serve( $payload, $request->is_head(), $debug, (int) ( $page['shared_max_age'] ?? 0 ) );
+						self::serve( $payload, $request->is_head(), $debug, self::shared_max_age( $payload, $page, $request->vary_cookie_values() ) );
 					}
 				}
 
@@ -142,7 +155,8 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 
 			// A HEAD miss cannot produce a reusable HTML body. It may still use a
 			// future GET cache hit because GET and HEAD deliberately share a key.
-			if ( $request->is_head() ) {
+			// A request that may only read the cache renders without capture.
+			if ( $request->is_head() || ! $request->is_storable() ) {
 				return;
 			}
 
@@ -355,7 +369,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				}
 
 				if ( is_string( $stored ) && '' !== $stored ) {
-					$payload = self::decode_payload( $stored, $page );
+					$payload = self::decode_payload( $stored, $page, $cache_key, (string) ( $config['site']['secret'] ?? '' ) );
 					$content_version_matches = null !== $payload
 						? self::payload_content_version_matches( $payload, $redis, $page )
 						: false;
@@ -385,7 +399,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				}
 
 				self::debug_header( $debug, 'MISS' );
-				if ( ! empty( $context['head_request'] ) ) {
+				if ( ! empty( $context['head_request'] ) || empty( $context['storable'] ) ) {
 					return $template;
 				}
 
@@ -704,19 +718,44 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 		}
 
 		/**
+		 * Verify, unpack and validate a stored payload. Signed v4 payloads are the
+		 * only kind accepted once the site has a page secret; unsigned v1–v3 entries
+		 * are read only by a runtime that has none yet, and only where their content
+		 * binding is still enough for the enabled invalidation options.
+		 *
 		 * @param array<string, mixed> $page_config
-		 * @return array{version: int, status: int, type: string, headers: array<int, array{name: string, value: string}>, body: string, stored_at: int, resource_type: string, resource_id: int, resource_version: string}|null
+		 * @return array{version: int, status: int, type: string, headers: array<int, array{name: string, value: string}>, body: string, stored_at: int, resources: array<int, array{type: string, id: int, version: string}>}|null
 		 */
-		private static function decode_payload( string $stored, array $page_config ): ?array {
-			$payload = @unserialize( $stored, array( 'allowed_classes' => false ) );
+		private static function decode_payload( string $stored, array $page_config, string $cache_key, string $secret ): ?array {
+			if ( str_starts_with( $stored, Simple_Redis_Cache_Early_Config::PAGE_PAYLOAD_PREFIX ) ) {
+				$signed     = substr( $stored, strlen( Simple_Redis_Cache_Early_Config::PAGE_PAYLOAD_PREFIX ) );
+				$mac        = substr( $signed, 0, 64 );
+				$serialized = substr( $signed, 64 );
+				if ( 64 !== strlen( $mac ) || ! hash_equals( Simple_Redis_Cache_Early_Config::page_payload_mac( $cache_key, $serialized, $secret ), $mac ) ) {
+					return null;
+				}
+				$payload = @unserialize( $serialized, array( 'allowed_classes' => false ) );
+				if ( ! is_array( $payload ) || 4 !== (int) ( $payload['version'] ?? 0 ) ) {
+					return null;
+				}
+			} else {
+				if ( '' !== $secret ) {
+					return null;
+				}
+				$payload = @unserialize( $stored, array( 'allowed_classes' => false ) );
+			}
+
 			$version = is_array( $payload ) ? (int) ( $payload['version'] ?? 0 ) : 0;
-			if ( ! is_array( $payload ) || ! in_array( $version, array( 1, 2, 3 ), true ) || ! is_string( $payload['body'] ?? null ) ) {
+			if ( ! is_array( $payload ) || ! in_array( $version, array( 1, 2, 3, 4 ), true ) || ! is_string( $payload['body'] ?? null ) ) {
 				return null;
 			}
 			if ( ! empty( $page_config['invalidate_on_post_update'] ) && $version < 2 ) {
 				return null;
 			}
 			if ( ! empty( $page_config['invalidate_term_archives_on_post_update'] ) && $version < 3 ) {
+				return null;
+			}
+			if ( ! empty( $page_config['invalidate_listings_on_post_update'] ) && $version < 4 ) {
 				return null;
 			}
 
@@ -745,25 +784,44 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				$safe_headers[] = array( 'name' => $name, 'value' => $value );
 			}
 
-			$resource_type    = '';
-			$resource_id      = 0;
-			$resource_version = '';
-			if ( 2 === $version ) {
-				$resource_id      = (int) ( $payload['post_id'] ?? 0 );
-				$resource_type    = $resource_id > 0 ? 'post' : '';
-				$resource_version = (string) ( $payload['post_version'] ?? '' );
-			} elseif ( 3 === $version ) {
-				$resource_type    = (string) ( $payload['resource_type'] ?? '' );
-				$resource_id      = (int) ( $payload['resource_id'] ?? 0 );
-				$resource_version = (string) ( $payload['resource_version'] ?? '' );
-			}
-			if (
-				! in_array( $resource_type, array( '', 'post', 'term' ), true ) ||
-				$resource_id < 0 ||
-				( '' === $resource_type && ( 0 !== $resource_id || '' !== $resource_version ) ) ||
-				( '' !== $resource_type && ( $resource_id < 1 || 1 !== preg_match( '/^[a-f0-9]{32}$/D', $resource_version ) ) )
-			) {
+			$body = $payload['body'];
+			if ( 4 === $version && 'deflate' === ( $payload['encoding'] ?? '' ) ) {
+				$body = function_exists( 'gzinflate' ) ? @gzinflate( $body, self::MAX_INFLATED_BODY ) : false;
+				if ( ! is_string( $body ) ) {
+					return null;
+				}
+			} elseif ( 4 === $version && '' !== ( $payload['encoding'] ?? '' ) ) {
 				return null;
+			}
+
+			$resources = array();
+			if ( 2 === $version && (int) ( $payload['post_id'] ?? 0 ) > 0 ) {
+				$resources[] = array( 'type' => 'post', 'id' => (int) $payload['post_id'], 'version' => (string) ( $payload['post_version'] ?? '' ) );
+			} elseif ( 3 === $version && '' !== (string) ( $payload['resource_type'] ?? '' ) ) {
+				$resources[] = array( 'type' => (string) $payload['resource_type'], 'id' => (int) ( $payload['resource_id'] ?? 0 ), 'version' => (string) ( $payload['resource_version'] ?? '' ) );
+			} elseif ( 3 === $version && ( 0 !== (int) ( $payload['resource_id'] ?? 0 ) || '' !== (string) ( $payload['resource_version'] ?? '' ) ) ) {
+				return null;
+			} elseif ( 4 === $version ) {
+				if ( ! is_array( $payload['resources'] ?? null ) || count( $payload['resources'] ) > 4 ) {
+					return null;
+				}
+				foreach ( $payload['resources'] as $resource ) {
+					if ( ! is_array( $resource ) ) {
+						return null;
+					}
+					$resources[] = array( 'type' => (string) ( $resource['type'] ?? '' ), 'id' => (int) ( $resource['id'] ?? 0 ), 'version' => (string) ( $resource['version'] ?? '' ) );
+				}
+			}
+
+			foreach ( $resources as $resource ) {
+				if (
+					! in_array( $resource['type'], array( 'post', 'term', 'list' ), true ) ||
+					( 'list' === $resource['type'] && $version < 4 ) ||
+					$resource['id'] < 1 ||
+					1 !== preg_match( '/^[a-f0-9]{32}$/D', $resource['version'] )
+				) {
+					return null;
+				}
 			}
 
 			return array(
@@ -771,40 +829,71 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				'status'    => $status,
 				'type'      => $type,
 				'headers'   => $safe_headers,
-				'body'      => $payload['body'],
+				'body'      => $body,
 				'stored_at' => max( 0, (int) ( $payload['stored_at'] ?? 0 ) ),
-				'resource_type' => $resource_type,
-				'resource_id' => $resource_id,
-				'resource_version' => $resource_version,
+				'resources' => $resources,
 			);
 		}
 
 		/**
-		 * Check the late-bound post or term token before serving its payload. A
-		 * Redis error returns null so the request falls through to WordPress.
+		 * Check every late-bound post, term or listing token before serving the
+		 * payload. A Redis error returns null so the request falls through to
+		 * WordPress; a binding whose option is now off no longer applies.
 		 *
 		 * @param array<string, mixed> $payload
 		 * @param array<string, mixed> $page_config
 		 */
 		private static function payload_content_version_matches( array $payload, Simple_Redis_Cache_Redis $redis, array $page_config ): ?bool {
-			$resource_type = (string) ( $payload['resource_type'] ?? '' );
-			$enabled       = ( 'post' === $resource_type && ! empty( $page_config['invalidate_on_post_update'] ) ) ||
-				( 'term' === $resource_type && ! empty( $page_config['invalidate_term_archives_on_post_update'] ) );
-			if ( ! $enabled ) {
-				return true;
+			$options = array(
+				'post' => 'invalidate_on_post_update',
+				'term' => 'invalidate_term_archives_on_post_update',
+				'list' => 'invalidate_listings_on_post_update',
+			);
+
+			foreach ( (array) ( $payload['resources'] ?? array() ) as $resource ) {
+				$type = (string) ( $resource['type'] ?? '' );
+				if ( ! isset( $options[ $type ] ) || empty( $page_config[ $options[ $type ] ] ) ) {
+					continue;
+				}
+
+				$current = $redis->page_content_version( $type, (int) ( $resource['id'] ?? 0 ) );
+				if ( ! is_string( $current ) ) {
+					return null;
+				}
+				if ( ! hash_equals( (string) ( $resource['version'] ?? '' ), $current ) ) {
+					return false;
+				}
 			}
 
-			$resource_id = max( 0, (int) ( $payload['resource_id'] ?? 0 ) );
-			if ( $resource_id < 1 ) {
-				return true;
+			return true;
+		}
+
+		/**
+		 * The s-maxage a public HIT may advertise. A page varied by cookie never
+		 * gets one: a CDN keys by URL alone and would hand the first variant to
+		 * everyone. A 404 or search result is capped like its Redis lifetime.
+		 *
+		 * @param array<string, mixed>  $payload
+		 * @param array<string, mixed>  $page_config
+		 * @param array<string, string> $vary_values
+		 */
+		private static function shared_max_age( array $payload, array $page_config, array $vary_values ): int {
+			$seconds = max( 0, (int) ( $page_config['shared_max_age'] ?? 0 ) );
+			if ( ! empty( $vary_values ) ) {
+				return 0;
+			}
+			if ( in_array( (string) ( $payload['type'] ?? '' ), array( '404', 'search' ), true ) ) {
+				$seconds = min( $seconds, Simple_Redis_Cache_Early_Config::SHORT_PAGE_TTL );
 			}
 
-			$current = $redis->page_content_version( $resource_type, $resource_id );
-			if ( ! is_string( $current ) ) {
-				return null;
-			}
+			return $seconds;
+		}
 
-			return hash_equals( (string) ( $payload['resource_version'] ?? '' ), $current );
+		/** Let later requests skip a Redis that just failed at runtime. */
+		private static function trip_breaker( Simple_Redis_Cache_Redis $redis ): void {
+			if ( method_exists( $redis, 'trip_breaker' ) ) {
+				$redis->trip_breaker();
+			}
 		}
 
 		/** @param array<string, mixed> $page_config */

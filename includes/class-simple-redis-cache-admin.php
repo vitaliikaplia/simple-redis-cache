@@ -174,20 +174,22 @@ final class Simple_Redis_Cache_Admin {
 		self::add_field( 'page', 'enabled', __( 'Enable page cache', 'simple-redis-cache' ), 'checkbox', array(), __( "The plugin attempts to add define( 'WP_CACHE', true ); to wp-config.php when needed. If automatic enabling fails, set WP_CACHE to true manually and verify the Status tab.", 'simple-redis-cache' ) );
 		self::add_field( 'page', 'ttl', __( 'Page TTL', 'simple-redis-cache' ), 'number', array( 'min' => 60, 'max' => MONTH_IN_SECONDS, 'step' => 1 ), __( 'Seconds.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'shared_max_age', __( 'CDN cache lifetime', 'simple-redis-cache' ), 'number', array( 'min' => 0, 'max' => MONTH_IN_SECONDS, 'step' => 1 ), __( 'Seconds a CDN or reverse proxy may keep a cache hit, sent as Cache-Control: public, max-age=0, s-maxage=N. Browsers still revalidate every time. Zero disables the header, which is what shared caches see today. Enable this only if you are willing to purge the CDN when content changes, because the CDN does not know about page invalidation.', 'simple-redis-cache' ) );
-		self::add_field( 'page', 'invalidate_on_post_update', __( "Clear a page's cache when it is updated", 'simple-redis-cache' ), 'checkbox', array(), __( 'Invalidates only the updated post, page or custom post type and all translations detected through WPML or Polylang. Unrelated home, archive and other derived pages are not cleared.', 'simple-redis-cache' ) );
-		self::add_field( 'page', 'invalidate_term_archives_on_post_update', __( 'Clear related taxonomy archives when a post is updated', 'simple-redis-cache' ), 'checkbox', array(), __( 'Invalidates archives of current, previous and new assigned terms in public standard and custom taxonomies, including hierarchical parents and terms assigned to WPML or Polylang translations. Unrelated taxonomy archives remain cached.', 'simple-redis-cache' ) );
+		self::add_field( 'page', 'invalidate_on_post_update', __( "Clear a page's cache when it is updated", 'simple-redis-cache' ), 'checkbox', array(), __( 'Invalidates the updated, published, unpublished, scheduled or deleted post, page or custom post type and all translations detected through WPML or Polylang. Listing pages are handled by the option below.', 'simple-redis-cache' ) );
+		self::add_field( 'page', 'invalidate_term_archives_on_post_update', __( 'Clear related taxonomy archives when a post is updated', 'simple-redis-cache' ), 'checkbox', array(), __( 'Invalidates archives of current, previous and new assigned terms in public standard and custom taxonomies, including hierarchical parents and terms assigned to WPML or Polylang translations, and the archive of a term that is renamed or deleted. Unrelated taxonomy archives remain cached.', 'simple-redis-cache' ) );
+		self::add_field( 'page', 'invalidate_listings_on_post_update', __( 'Clear listing pages when content is published', 'simple-redis-cache' ), 'checkbox', array(), __( 'When public content is published, changed, unpublished, scheduled or deleted, invalidates the front page, the posts page, post type, author and date archives, search results and cached 404 pages, with all their pagination. Taxonomy archives use the option above when it is enabled, and this one otherwise.', 'simple-redis-cache' ) );
+		self::add_field( 'page', 'purge_on_site_change', __( 'Clear the page cache when the site changes', 'simple-redis-cache' ), 'checkbox', array(), __( 'Clears the whole HTML page cache after menus, widgets, Customizer settings, the active theme, core site settings, ACF options pages or a plugin, theme or core update change. Deploys that bypass WordPress can run: wp simple-redis-cache purge page', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'cache_logged_in', __( 'Cache logged-in users', 'simple-redis-cache' ), 'checkbox', array(), __( 'Disabled is safest. Logged-in variants are isolated by session when enabled.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'cache_home', __( 'Cache home page', 'simple-redis-cache' ), 'checkbox' );
 		self::add_field( 'page', 'cache_singular', __( 'Cache posts, pages and CPTs', 'simple-redis-cache' ), 'checkbox' );
 		self::add_field( 'page', 'cache_archives', __( 'Cache archives', 'simple-redis-cache' ), 'checkbox' );
-		self::add_field( 'page', 'cache_search', __( 'Cache search results', 'simple-redis-cache' ), 'checkbox' );
-		self::add_field( 'page', 'cache_404', __( 'Cache 404 responses', 'simple-redis-cache' ), 'checkbox' );
+		self::add_field( 'page', 'cache_search', __( 'Cache search results', 'simple-redis-cache' ), 'checkbox', array(), __( 'Kept for at most 10 minutes, in Redis and at a CDN.', 'simple-redis-cache' ) );
+		self::add_field( 'page', 'cache_404', __( 'Cache 404 responses', 'simple-redis-cache' ), 'checkbox', array(), __( 'Kept for at most 10 minutes, in Redis and at a CDN.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'cache_query_strings', __( 'Cache query strings', 'simple-redis-cache' ), 'checkbox', array(), __( 'Non-ignored query parameters normally bypass page cache unless this is enabled; supported search parameters are a limited exception. Built-in unsafe parameters always bypass.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'ignored_query_parameters', __( 'Ignored query parameters', 'simple-redis-cache' ), 'textarea', array(), __( 'One exact name or wildcard pattern per line; * and ? are supported. Matching non-sensitive parameters are removed from the cache key; built-in unsafe names cannot be ignored.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'excluded_paths', __( 'Excluded paths', 'simple-redis-cache' ), 'textarea', array(), __( 'One path pattern per line; * and ? are supported.', 'simple-redis-cache' ) );
-		self::add_field( 'page', 'excluded_cookies', __( 'Excluded request cookies', 'simple-redis-cache' ), 'textarea', array(), __( 'Matching cookies normally bypass page cache. Vary-cookie entries and the default WordPress auth prefixes when logged-in caching is enabled use isolated variants instead. Use one exact name, wildcard pattern, or conventional prefix ending in _ per line.', 'simple-redis-cache' ) );
+		self::add_field( 'page', 'excluded_cookies', __( 'Excluded request cookies', 'simple-redis-cache' ), 'textarea', array(), __( 'Matching cookies normally bypass page cache. Vary-cookie entries and the default WordPress auth prefixes when logged-in caching is enabled use isolated variants instead. Use one exact name, wildcard pattern, or conventional prefix ending in _ per line. Add every cookie that changes page content, such as a theme\'s maintenance-mode access cookie, and clear the page cache when such a mode is switched on.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'excluded_user_agents', __( 'Excluded user agents', 'simple-redis-cache' ), 'textarea', array(), __( 'One case-insensitive substring or wildcard pattern per line.', 'simple-redis-cache' ) );
-		self::add_field( 'page', 'vary_cookies', __( 'Cookies that vary the cache key', 'simple-redis-cache' ), 'textarea', array(), __( 'One cookie name per line. Useful for language cookies that safely select a page variant.', 'simple-redis-cache' ) );
+		self::add_field( 'page', 'vary_cookies', __( 'Cookies that vary the cache key', 'simple-redis-cache' ), 'textarea', array(), __( 'One cookie name per line. Useful for language cookies that safely select a page variant. Values must look like a language or locale code (letters, digits, _ and -, up to 32 characters) and, when Polylang, WPML or WP-LOC is active, all name one and the same of its languages; each URL caches at most 16 such variants, and they never get the CDN lifetime.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'allowed_set_cookies', __( 'Allowed response Set-Cookie names', 'simple-redis-cache' ), 'textarea', array(), __( 'Responses setting only these cookie names may be stored; Set-Cookie headers are never replayed from cache.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'debug_header', __( 'Debug response header', 'simple-redis-cache' ), 'checkbox', array(), __( 'Send X-Simple-Redis-Cache with HIT, MISS or BYPASS status.', 'simple-redis-cache' ) );
 
@@ -206,7 +208,7 @@ final class Simple_Redis_Cache_Admin {
 		self::add_field( 'cloudflare', 'keep_api_token', __( 'Stored API token', 'simple-redis-cache' ), 'keep_api_token' );
 		self::add_field( 'cloudflare', 'purge_on_clear_all', __( 'Clear Cloudflare with Clear all cache', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the whole Cloudflare zone whenever the Clear all cache action runs.', 'simple-redis-cache' ) );
 		self::add_field( 'cloudflare', 'purge_on_clear_page', __( 'Clear Cloudflare with Clear page cache', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the whole Cloudflare zone whenever the Clear page cache action runs.', 'simple-redis-cache' ) );
-		self::add_field( 'cloudflare', 'purge_on_post_update', __( 'Clear Cloudflare when content is updated', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the exact URLs this plugin already invalidates on the HTML Page Cache tab, so it requires those options to be enabled. Only the updated entries and the first page of related term archives are purged; deeper pagination and generic views are not, because Cloudflare purges exact URLs.', 'simple-redis-cache' ) );
+		self::add_field( 'cloudflare', 'purge_on_post_update', __( 'Clear Cloudflare when content is updated', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the exact URLs this plugin already invalidates on the HTML Page Cache tab, so it requires those options to be enabled. The updated entries, the first page of related term archives and, for listing pages, the home page of each language, the posts page and the post type archive are purged; deeper pagination is not, because Cloudflare purges exact URLs.', 'simple-redis-cache' ) );
 	}
 
 	/**
@@ -640,6 +642,7 @@ final class Simple_Redis_Cache_Admin {
 			<tr><th scope="row"><?php esc_html_e( 'Object drop-in', 'simple-redis-cache' ); ?></th><td><?php echo esc_html( $status_text[ $object_state ] ); ?><br><code><?php echo esc_html( $object_path ); ?></code><?php echo '' !== $object_mode ? ' · ' . esc_html( sprintf( /* translators: %s: octal file mode. */ __( 'mode %s', 'simple-redis-cache' ), $object_mode ) ) : ''; ?><?php if ( self::file_is_group_or_other_writable( $object_path ) ) : ?><br><span class="notice-warning"><?php esc_html_e( 'The drop-in is writable by its group or by other system users.', 'simple-redis-cache' ); ?></span><?php endif; ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'Page drop-in', 'simple-redis-cache' ); ?></th><td><?php echo esc_html( $status_text[ $page_state ] ); ?><br><code><?php echo esc_html( $page_path ); ?></code><?php echo '' !== $page_mode ? ' · ' . esc_html( sprintf( /* translators: %s: octal file mode. */ __( 'mode %s', 'simple-redis-cache' ), $page_mode ) ) : ''; ?><?php if ( self::file_is_group_or_other_writable( $page_path ) ) : ?><br><span class="notice-warning"><?php esc_html_e( 'The drop-in is writable by its group or by other system users.', 'simple-redis-cache' ); ?></span><?php endif; ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'WP_CACHE', 'simple-redis-cache' ); ?></th><td><?php echo defined( 'WP_CACHE' ) && WP_CACHE ? esc_html__( 'true', 'simple-redis-cache' ) : esc_html__( 'not true', 'simple-redis-cache' ); ?></td></tr>
+			<tr><th scope="row"><?php esc_html_e( 'Outage state', 'simple-redis-cache' ); ?></th><td><?php self::render_outage_state(); ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'Generated early config', 'simple-redis-cache' ); ?></th><td><code><?php echo esc_html( Simple_Redis_Cache_Early_Config::path() ); ?></code><br><?php echo esc_html( (string) $early_status['label'] ); ?><?php echo '' !== (string) $early_status['mode'] ? ' · ' . esc_html( sprintf( /* translators: %s: octal file mode. */ __( 'mode %s', 'simple-redis-cache' ), (string) $early_status['mode'] ) ) : ''; ?><?php if ( ! empty( $early_status['permissions_warning'] ) ) : ?><br><span class="notice-warning"><?php esc_html_e( 'The generated configuration permissions are broader than the recommended 0640 or stricter.', 'simple-redis-cache' ); ?></span><?php endif; ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'Redis key prefix', 'simple-redis-cache' ); ?></th><td><code><?php echo esc_html( Simple_Redis_Cache_Early_Config::prefix( $config ) ); ?></code><br><span class="description"><?php esc_html_e( 'Define WP_CACHE_KEY_SALT with a non-empty value in wp-config.php to control the leading prefix for every plugin key.', 'simple-redis-cache' ); ?></span></td></tr>
 		</tbody></table>
@@ -656,6 +659,42 @@ final class Simple_Redis_Cache_Admin {
 			<a class="button" href="<?php echo esc_url( self::purge_url( 'object' ) ); ?>"><?php esc_html_e( 'Clear object cache', 'simple-redis-cache' ); ?></a>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Show the files the drop-ins use to survive a Redis outage. A marker that
+	 * stays here although Redis is healthy usually means wp-content is not
+	 * writable by PHP, so the drop-ins cannot manage it.
+	 */
+	private static function render_outage_state(): void {
+		$dirty   = WP_CONTENT_DIR . '/simple-redis-cache-object-dirty';
+		$lines   = array();
+		$breaker = Simple_Redis_Cache_Redis::breaker_path();
+		clearstatcache();
+
+		if ( is_file( $dirty ) ) {
+			$lines[] = sprintf(
+				/* translators: %s: date and time. */
+				__( 'Object-cache changes were lost during an outage at %s; the next request that reaches Redis invalidates the object cache.', 'simple-redis-cache' ),
+				wp_date( 'Y-m-d H:i:s', (int) filemtime( $dirty ) )
+			);
+		}
+		if ( is_file( $dirty . '.claimed' ) ) {
+			$lines[] = __( 'A request is invalidating the object cache after an outage.', 'simple-redis-cache' );
+		}
+		$tripped = is_file( $breaker ) ? time() - (int) filemtime( $breaker ) : null;
+		if ( null !== $tripped && $tripped >= 0 && $tripped < 15 ) {
+			$lines[] = sprintf(
+				/* translators: %d: seconds. */
+				_n( 'The drop-ins skip Redis for %d more second after a connection failure.', 'The drop-ins skip Redis for %d more seconds after a connection failure.', 15 - $tripped, 'simple-redis-cache' ),
+				15 - $tripped
+			);
+		}
+		if ( ! wp_is_writable( WP_CONTENT_DIR ) ) {
+			$lines[] = __( 'wp-content is not writable by PHP, so the drop-ins cannot record or clear outage markers.', 'simple-redis-cache' );
+		}
+
+		echo empty( $lines ) ? esc_html__( 'No outage recorded.', 'simple-redis-cache' ) : implode( '<br>', array_map( 'esc_html', $lines ) );
 	}
 
 	/**
@@ -717,10 +756,15 @@ final class Simple_Redis_Cache_Admin {
 			$host = strtolower( (string) wp_parse_url( home_url( '/' ), PHP_URL_HOST ) );
 		}
 
+		/*
+		 * Vary cookies select a page variant at the origin, but the edge keys by URL
+		 * alone and would serve whichever variant it stored first to everyone, so a
+		 * request carrying one has to go to the origin too.
+		 */
 		$rule   = Simple_Redis_Cache_Cloudflare::html_cache_rule(
 			$host,
 			self::cloudflare_rule_paths(),
-			(array) ( $page['excluded_cookies'] ?? array() ),
+			array_merge( (array) ( $page['excluded_cookies'] ?? array() ), (array) ( $page['vary_cookies'] ?? array() ) ),
 			(string) wp_parse_url( home_url( '/' ), PHP_URL_PATH )
 		);
 		$length = function_exists( 'mb_strlen' ) ? mb_strlen( $rule['expression'] ) : strlen( $rule['expression'] );

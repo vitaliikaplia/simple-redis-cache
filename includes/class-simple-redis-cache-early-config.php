@@ -10,7 +10,22 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class Simple_Redis_Cache_Early_Config {
-	public const CONFIG_VERSION = 3;
+	public const CONFIG_VERSION = 4;
+
+	/**
+	 * Longest a cached 404 or search result may live, in Redis and at the edge.
+	 * Any anonymous visitor can mint these by the thousand, and a 404 can turn into
+	 * a real page the moment a post is published.
+	 */
+	public const SHORT_PAGE_TTL = 600;
+
+	/**
+	 * Signed page payload format: this marker, a 64-hex HMAC-SHA256 over the cache
+	 * key and the serialized payload, then the serialized payload. The MAC keeps
+	 * another writer on a shared Redis from planting HTML for this site, and the
+	 * key binding stops a valid payload from being replayed under another URL.
+	 */
+	public const PAGE_PAYLOAD_PREFIX = "SRCP4\0";
 
 	/** @var array<string, mixed>|null */
 	private static ?array $config = null;
@@ -52,6 +67,11 @@ final class Simple_Redis_Cache_Early_Config {
 				'shared_max_age'          => 0,
 				'invalidate_on_post_update' => false,
 				'invalidate_term_archives_on_post_update' => false,
+				// Home, posts page, generic archives, search and 404 pages list content
+				// rather than being one post, so they share a single listing token.
+				'invalidate_listings_on_post_update' => true,
+				// Menus, widgets, the Customizer, the theme and updates change every page.
+				'purge_on_site_change'    => true,
 				'cache_logged_in'         => false,
 				'cache_home'              => true,
 				'cache_singular'          => true,
@@ -119,7 +139,53 @@ final class Simple_Redis_Cache_Early_Config {
 				'host'            => '',
 				'port'            => 0,
 				'fallback_prefix' => '',
+				// Which installation generated this config; see install_identity().
+				'identity'        => '',
+				// HMAC key for page payloads, so a foreign writer cannot plant HTML.
+				'secret'          => '',
 			),
+		);
+	}
+
+	/**
+	 * Fingerprint of the installation the running code belongs to.
+	 *
+	 * A copied site (staging, a restored backup) inherits the generated config,
+	 * the drop-ins and the saved settings, and with them the original's key
+	 * prefix. Comparing this fingerprint lets the copy notice it is not the site
+	 * that wrote the config before it shares the original's Redis namespace.
+	 *
+	 * It must be identical for every runtime of one site. ABSPATH is not: WP-CLI
+	 * keeps --path as typed, symlinks and all, while the web resolves __DIR__. So
+	 * the real path of wp-content — where this config lives, and usually shared
+	 * across release directories — stands for the installation, with the database
+	 * name and table prefix. DB_HOST is left out: CLI and web may reach the same
+	 * server under different names.
+	 */
+	public static function install_identity(): string {
+		return self::identity_for( (string) WP_CONTENT_DIR );
+	}
+
+	/** The identity of an installation whose wp-content lives at $content_dir. */
+	public static function identity_for( string $content_dir ): string {
+		global $table_prefix;
+
+		$real = realpath( $content_dir );
+
+		return substr(
+			hash(
+				'sha256',
+				implode(
+					"\n",
+					array(
+						rtrim( str_replace( '\\', '/', is_string( $real ) ? $real : $content_dir ), '/' ),
+						defined( 'DB_NAME' ) ? (string) DB_NAME : '',
+						isset( $table_prefix ) && is_string( $table_prefix ) ? $table_prefix : '',
+					)
+				)
+			),
+			0,
+			32
 		);
 	}
 
@@ -147,7 +213,29 @@ final class Simple_Redis_Cache_Early_Config {
 			}
 		}
 
-		self::$config = self::merge( self::defaults(), $config );
+		$defaults = self::defaults();
+		$config   = self::merge( $defaults, $config );
+		// A damaged file must not turn a section into a scalar every request then trips over.
+		foreach ( $defaults as $section => $default ) {
+			if ( is_array( $default ) && ! is_array( $config[ $section ] ?? null ) ) {
+				$config[ $section ] = $default;
+			}
+		}
+		unset( $config['site']['copy_detected'] );
+
+		/*
+		 * A config written by another installation must not run here: its prefix
+		 * and connection belong to the original site. Both layers stay inert until
+		 * an administrator request regenerates this site's own identity.
+		 */
+		$identity = (string) ( $config['site']['identity'] ?? '' );
+		if ( '' !== $identity && ! hash_equals( $identity, self::install_identity() ) ) {
+			$config['object']['enabled']     = false;
+			$config['page']['enabled']       = false;
+			$config['site']['copy_detected'] = true;
+		}
+
+		self::$config = $config;
 
 		return self::$config;
 	}
@@ -182,6 +270,11 @@ final class Simple_Redis_Cache_Early_Config {
 
 	public static function meta_key( string $name, ?array $config = null ): string {
 		return self::prefix( $config ) . 'meta:' . $name;
+	}
+
+	/** HMAC that binds a serialized page payload to the exact key it was stored under. */
+	public static function page_payload_mac( string $cache_key, string $serialized, string $secret ): string {
+		return hash_hmac( 'sha256', $cache_key . "\0" . $serialized, $secret );
 	}
 
 	/** Shared hash containing post and taxonomy-term HTML content versions. */

@@ -2,14 +2,14 @@
 # This file is distributed under the GPL-2.0-or-later.
 msgid ""
 msgstr ""
-"Project-Id-Version: Simple Redis Cache 0.7.1\n"
+"Project-Id-Version: Simple Redis Cache 0.8.0\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/simple-redis-cache\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2026-10-08T14:49:10+00:00\n"
+"POT-Creation-Date: 2026-10-29T23:17:41+00:00\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "X-Generator: WP-CLI 2.12.0\n"
 "X-Domain: simple-redis-cache\n"
@@ -17,7 +17,7 @@ msgstr ""
 #. Plugin Name of the plugin
 #: simple-redis-cache.php
 #: includes/class-simple-redis-cache-admin.php:48
-#: includes/class-simple-redis-cache-admin.php:267
+#: includes/class-simple-redis-cache-admin.php:269
 msgid "Simple Redis Cache"
 msgstr ""
 
@@ -57,7 +57,7 @@ msgid "Discovering public URLs…"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:91
-#: includes/class-simple-redis-cache-admin.php:458
+#: includes/class-simple-redis-cache-admin.php:460
 msgid "Select at least one source to warm."
 msgstr ""
 
@@ -127,7 +127,7 @@ msgid "Failed"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:109
-#: includes/class-simple-redis-cache-admin.php:401
+#: includes/class-simple-redis-cache-admin.php:403
 msgid "Unknown error."
 msgstr ""
 
@@ -138,8 +138,8 @@ msgid "%d more issues not shown."
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:130
-#: includes/class-simple-redis-cache-admin.php:627
-#: includes/class-simple-redis-cache-admin.php:1218
+#: includes/class-simple-redis-cache-admin.php:629
+#: includes/class-simple-redis-cache-admin.php:1262
 msgid "Redis connection"
 msgstr ""
 
@@ -222,7 +222,7 @@ msgid "Persistent connection"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:152
-#: includes/class-simple-redis-cache-admin.php:1219
+#: includes/class-simple-redis-cache-admin.php:1263
 msgid "Object cache"
 msgstr ""
 
@@ -267,7 +267,7 @@ msgid "One exact WordPress cache group per line."
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:167
-#: includes/class-simple-redis-cache-admin.php:1220
+#: includes/class-simple-redis-cache-admin.php:1264
 msgid "HTML page cache"
 msgstr ""
 
@@ -300,7 +300,7 @@ msgid "Clear a page's cache when it is updated"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:177
-msgid "Invalidates only the updated post, page or custom post type and all translations detected through WPML or Polylang. Unrelated home, archive and other derived pages are not cleared."
+msgid "Invalidates the updated, published, unpublished, scheduled or deleted post, page or custom post type and all translations detected through WPML or Polylang. Listing pages are handled by the option below."
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:178
@@ -308,731 +308,782 @@ msgid "Clear related taxonomy archives when a post is updated"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:178
-msgid "Invalidates archives of current, previous and new assigned terms in public standard and custom taxonomies, including hierarchical parents and terms assigned to WPML or Polylang translations. Unrelated taxonomy archives remain cached."
+msgid "Invalidates archives of current, previous and new assigned terms in public standard and custom taxonomies, including hierarchical parents and terms assigned to WPML or Polylang translations, and the archive of a term that is renamed or deleted. Unrelated taxonomy archives remain cached."
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:179
-msgid "Cache logged-in users"
+msgid "Clear listing pages when content is published"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:179
-msgid "Disabled is safest. Logged-in variants are isolated by session when enabled."
+msgid "When public content is published, changed, unpublished, scheduled or deleted, invalidates the front page, the posts page, post type, author and date archives, search results and cached 404 pages, with all their pagination. Taxonomy archives use the option above when it is enabled, and this one otherwise."
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:180
-msgid "Cache home page"
+msgid "Clear the page cache when the site changes"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:180
+msgid "Clears the whole HTML page cache after menus, widgets, Customizer settings, the active theme, core site settings, ACF options pages or a plugin, theme or core update change. Deploys that bypass WordPress can run: wp simple-redis-cache purge page"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:181
-msgid "Cache posts, pages and CPTs"
+msgid "Cache logged-in users"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:181
+msgid "Disabled is safest. Logged-in variants are isolated by session when enabled."
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:182
-msgid "Cache archives"
+msgid "Cache home page"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:183
-msgid "Cache search results"
+msgid "Cache posts, pages and CPTs"
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:184
+msgid "Cache archives"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:185
+msgid "Cache search results"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:185
+#: includes/class-simple-redis-cache-admin.php:186
+msgid "Kept for at most 10 minutes, in Redis and at a CDN."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:186
 msgid "Cache 404 responses"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:185
+#: includes/class-simple-redis-cache-admin.php:187
 msgid "Cache query strings"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:185
+#: includes/class-simple-redis-cache-admin.php:187
 msgid "Non-ignored query parameters normally bypass page cache unless this is enabled; supported search parameters are a limited exception. Built-in unsafe parameters always bypass."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:186
+#: includes/class-simple-redis-cache-admin.php:188
 msgid "Ignored query parameters"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:186
+#: includes/class-simple-redis-cache-admin.php:188
 msgid "One exact name or wildcard pattern per line; * and ? are supported. Matching non-sensitive parameters are removed from the cache key; built-in unsafe names cannot be ignored."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:187
+#: includes/class-simple-redis-cache-admin.php:189
 msgid "Excluded paths"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:187
+#: includes/class-simple-redis-cache-admin.php:189
 msgid "One path pattern per line; * and ? are supported."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:188
+#: includes/class-simple-redis-cache-admin.php:190
 msgid "Excluded request cookies"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:188
-msgid "Matching cookies normally bypass page cache. Vary-cookie entries and the default WordPress auth prefixes when logged-in caching is enabled use isolated variants instead. Use one exact name, wildcard pattern, or conventional prefix ending in _ per line."
+#: includes/class-simple-redis-cache-admin.php:190
+msgid "Matching cookies normally bypass page cache. Vary-cookie entries and the default WordPress auth prefixes when logged-in caching is enabled use isolated variants instead. Use one exact name, wildcard pattern, or conventional prefix ending in _ per line. Add every cookie that changes page content, such as a theme's maintenance-mode access cookie, and clear the page cache when such a mode is switched on."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:189
+#: includes/class-simple-redis-cache-admin.php:191
 msgid "Excluded user agents"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:189
+#: includes/class-simple-redis-cache-admin.php:191
 msgid "One case-insensitive substring or wildcard pattern per line."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:190
+#: includes/class-simple-redis-cache-admin.php:192
 msgid "Cookies that vary the cache key"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:190
-msgid "One cookie name per line. Useful for language cookies that safely select a page variant."
+#: includes/class-simple-redis-cache-admin.php:192
+msgid "One cookie name per line. Useful for language cookies that safely select a page variant. Values must look like a language or locale code (letters, digits, _ and -, up to 32 characters) and, when Polylang, WPML or WP-LOC is active, all name one and the same of its languages; each URL caches at most 16 such variants, and they never get the CDN lifetime."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:191
+#: includes/class-simple-redis-cache-admin.php:193
 msgid "Allowed response Set-Cookie names"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:191
+#: includes/class-simple-redis-cache-admin.php:193
 msgid "Responses setting only these cookie names may be stored; Set-Cookie headers are never replayed from cache."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:192
+#: includes/class-simple-redis-cache-admin.php:194
 msgid "Debug response header"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:192
+#: includes/class-simple-redis-cache-admin.php:194
 msgid "Send X-Simple-Redis-Cache with HIT, MISS or BYPASS status."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:196
-#: includes/class-simple-redis-cache-admin.php:1221
+#: includes/class-simple-redis-cache-admin.php:198
+#: includes/class-simple-redis-cache-admin.php:1265
 msgid "Cloudflare cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:198
+#: includes/class-simple-redis-cache-admin.php:200
 msgid "Clears the Cloudflare edge cache alongside this site's own caches. Clearing the origin without clearing the edge leaves visitors on the previous page until the CDN lifetime expires."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:199
+#: includes/class-simple-redis-cache-admin.php:201
 msgid "Create a scoped API token in Cloudflare with the Zone / Cache Purge permission limited to this zone. An account-wide Global API Key is not used and is not required."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:204
-#: includes/class-simple-redis-cache-admin.php:682
+#: includes/class-simple-redis-cache-admin.php:206
+#: includes/class-simple-redis-cache-admin.php:721
 msgid "Zone ID"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:204
+#: includes/class-simple-redis-cache-admin.php:206
 msgid "The 32-character zone ID from the Cloudflare dashboard overview page."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:205
+#: includes/class-simple-redis-cache-admin.php:207
 msgid "API token"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:205
+#: includes/class-simple-redis-cache-admin.php:207
 msgid "Leave blank to retain the stored token when the option below is checked."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:206
+#: includes/class-simple-redis-cache-admin.php:208
 msgid "Stored API token"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:207
+#: includes/class-simple-redis-cache-admin.php:209
 msgid "Clear Cloudflare with Clear all cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:207
+#: includes/class-simple-redis-cache-admin.php:209
 msgid "Purge the whole Cloudflare zone whenever the Clear all cache action runs."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:208
+#: includes/class-simple-redis-cache-admin.php:210
 msgid "Clear Cloudflare with Clear page cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:208
+#: includes/class-simple-redis-cache-admin.php:210
 msgid "Purge the whole Cloudflare zone whenever the Clear page cache action runs."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:209
+#: includes/class-simple-redis-cache-admin.php:211
 msgid "Clear Cloudflare when content is updated"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:209
-msgid "Purge the exact URLs this plugin already invalidates on the HTML Page Cache tab, so it requires those options to be enabled. Only the updated entries and the first page of related term archives are purged; deeper pagination and generic views are not, because Cloudflare purges exact URLs."
+#: includes/class-simple-redis-cache-admin.php:211
+msgid "Purge the exact URLs this plugin already invalidates on the HTML Page Cache tab, so it requires those options to be enabled. The updated entries, the first page of related term archives and, for listing pages, the home page of each language, the posts page and the post type archive are purged; deeper pagination is not, because Cloudflare purges exact URLs."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:232
+#: includes/class-simple-redis-cache-admin.php:234
 msgid "The settings were not saved because the submitted section was invalid. Please reload the page and try again."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:268
+#: includes/class-simple-redis-cache-admin.php:270
 msgid "Redis-only object and full-page cache for a single WordPress site. Cache entries use a non-empty WP_CACHE_KEY_SALT when defined, or a generated per-site fallback prefix."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:319
+#: includes/class-simple-redis-cache-admin.php:321
 msgid "Enabled"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:323
+#: includes/class-simple-redis-cache-admin.php:325
 msgid "Keep the currently stored API token when the token field is blank"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:325
+#: includes/class-simple-redis-cache-admin.php:327
 msgid "An API token is currently stored."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:330
+#: includes/class-simple-redis-cache-admin.php:332
 msgid "Keep the currently stored password when the password field is blank"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:332
+#: includes/class-simple-redis-cache-admin.php:334
 msgid "A password is currently stored."
 msgstr ""
 
 #. translators: %s: Redis read/write/delete test error.
-#: includes/class-simple-redis-cache-admin.php:370
+#: includes/class-simple-redis-cache-admin.php:372
 #, php-format
 msgid "Redis connected, but the isolated write/read/delete test failed: %s"
 msgstr ""
 
 #. translators: %s: Redis version.
-#: includes/class-simple-redis-cache-admin.php:380
+#: includes/class-simple-redis-cache-admin.php:382
 #, php-format
 msgid "Redis connection and isolated write/read/delete test succeeded (Redis %s)."
 msgstr ""
 
 #. translators: %s: Redis version.
-#: includes/class-simple-redis-cache-admin.php:381
+#: includes/class-simple-redis-cache-admin.php:383
 msgid "Redis connection and isolated write/read/delete test succeeded."
 msgstr ""
 
 #. translators: %s: Redis maxmemory policy.
-#: includes/class-simple-redis-cache-admin.php:389
+#: includes/class-simple-redis-cache-admin.php:391
 #, php-format
 msgid "Redis uses %s, which may evict persistent cache-generation metadata. Prefer noeviction or a volatile-* policy."
 msgstr ""
 
 #. translators: %s: Redis error.
-#: includes/class-simple-redis-cache-admin.php:400
+#: includes/class-simple-redis-cache-admin.php:402
 #, php-format
 msgid "Redis connection failed: %s"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:412
+#: includes/class-simple-redis-cache-admin.php:414
 msgid "You are not allowed to clear this cache."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:418
+#: includes/class-simple-redis-cache-admin.php:420
 #: includes/class-simple-redis-cache-purger.php:22
 msgid "Invalid cache purge scope."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:424
+#: includes/class-simple-redis-cache-admin.php:426
 msgid "Clearing object cache requires explicit confirmation."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:434
+#: includes/class-simple-redis-cache-admin.php:436
 msgid "All Redis caches were cleared."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:435
+#: includes/class-simple-redis-cache-admin.php:437
 msgid "Object cache was cleared."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:436
+#: includes/class-simple-redis-cache-admin.php:438
 msgid "HTML page cache was cleared."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:484
+#: includes/class-simple-redis-cache-admin.php:486
 msgid "The cache-warming URL could not be verified."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:498
 #: includes/class-simple-redis-cache-admin.php:500
+#: includes/class-simple-redis-cache-admin.php:502
 msgid "Caching"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:504
+#: includes/class-simple-redis-cache-admin.php:506
 msgid "Clear all"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:505
+#: includes/class-simple-redis-cache-admin.php:507
 msgid "Clear HTML page cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:506
-#: includes/class-simple-redis-cache-admin.php:656
+#: includes/class-simple-redis-cache-admin.php:508
+#: includes/class-simple-redis-cache-admin.php:659
 msgid "Clear object cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:507
-#: includes/class-simple-redis-cache-admin.php:1077
+#: includes/class-simple-redis-cache-admin.php:509
+#: includes/class-simple-redis-cache-admin.php:1121
 msgid "Warm cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:508
-#: includes/class-simple-redis-cache-admin.php:513
+#: includes/class-simple-redis-cache-admin.php:510
+#: includes/class-simple-redis-cache-admin.php:515
 msgid "Settings"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:570
+#: includes/class-simple-redis-cache-admin.php:572
 msgid "Simple Redis Cache requires the PhpRedis extension; caching will fail open until it is installed."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:577
+#: includes/class-simple-redis-cache-admin.php:579
 msgctxt "cache type in an admin notice"
 msgid "Object cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:578
+#: includes/class-simple-redis-cache-admin.php:580
 msgctxt "cache type in an admin notice"
 msgid "HTML page cache"
 msgstr ""
 
 #. translators: %s: localized cache type.
-#: includes/class-simple-redis-cache-admin.php:583
+#: includes/class-simple-redis-cache-admin.php:585
 #, php-format
 msgid "%s cannot start because another plugin owns its WordPress drop-in."
 msgstr ""
 
 #. translators: %s: localized cache type.
-#: includes/class-simple-redis-cache-admin.php:592
+#: includes/class-simple-redis-cache-admin.php:594
 #, php-format
 msgid "%s is enabled in settings, but its WordPress drop-in is not installed."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:602
+#: includes/class-simple-redis-cache-admin.php:604
 msgid "HTML page cache is enabled, but WP_CACHE is not true in the current request. Check wp-config.php; a newly added definition takes effect on the next request."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:619
+#: includes/class-simple-redis-cache-admin.php:621
 msgid "Installed by Simple Redis Cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:620
+#: includes/class-simple-redis-cache-admin.php:622
 msgid "Foreign drop-in (not modified)"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:621
+#: includes/class-simple-redis-cache-admin.php:623
 msgid "Not installed"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:624
+#: includes/class-simple-redis-cache-admin.php:626
 msgid "Status and diagnostics"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:626
+#: includes/class-simple-redis-cache-admin.php:628
 msgid "PhpRedis"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:626
+#: includes/class-simple-redis-cache-admin.php:628
 msgid "Available"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:626
+#: includes/class-simple-redis-cache-admin.php:628
 msgid "Missing"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:627
+#: includes/class-simple-redis-cache-admin.php:629
 msgid "Connected"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:627
-#: includes/class-simple-redis-cache-admin.php:636
+#: includes/class-simple-redis-cache-admin.php:629
+#: includes/class-simple-redis-cache-admin.php:638
 msgid "Unavailable"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:628
+#: includes/class-simple-redis-cache-admin.php:630
 msgid "Redis server"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:630
+#: includes/class-simple-redis-cache-admin.php:632
 msgid "Version unavailable"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:631
+#: includes/class-simple-redis-cache-admin.php:633
 msgid "maxmemory policy"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:631
+#: includes/class-simple-redis-cache-admin.php:633
 msgid "unavailable"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:633
+#: includes/class-simple-redis-cache-admin.php:635
 msgid "This policy can evict persistent generation metadata and should be changed to noeviction or volatile-* when possible."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:639
+#: includes/class-simple-redis-cache-admin.php:641
 msgid "Connection target"
 msgstr ""
 
 #. translators: %d: Redis database number.
-#: includes/class-simple-redis-cache-admin.php:639
+#: includes/class-simple-redis-cache-admin.php:641
 #, php-format
 msgid "database %d"
 msgstr ""
 
 #. translators: %d: Redis database number.
-#: includes/class-simple-redis-cache-admin.php:640
+#: includes/class-simple-redis-cache-admin.php:642
 msgid "Object drop-in"
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:640
-#: includes/class-simple-redis-cache-admin.php:641
+#: includes/class-simple-redis-cache-admin.php:642
 #: includes/class-simple-redis-cache-admin.php:643
+#: includes/class-simple-redis-cache-admin.php:646
 #, php-format
 msgid "mode %s"
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:640
-#: includes/class-simple-redis-cache-admin.php:641
+#: includes/class-simple-redis-cache-admin.php:642
+#: includes/class-simple-redis-cache-admin.php:643
 msgid "The drop-in is writable by its group or by other system users."
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:641
+#: includes/class-simple-redis-cache-admin.php:643
 msgid "Page drop-in"
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:642
+#: includes/class-simple-redis-cache-admin.php:644
 msgid "WP_CACHE"
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:642
+#: includes/class-simple-redis-cache-admin.php:644
 msgid "true"
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:642
+#: includes/class-simple-redis-cache-admin.php:644
 msgid "not true"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:643
+#: includes/class-simple-redis-cache-admin.php:645
+msgid "Outage state"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:646
 msgid "Generated early config"
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:643
+#: includes/class-simple-redis-cache-admin.php:646
 msgid "The generated configuration permissions are broader than the recommended 0640 or stricter."
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:644
+#: includes/class-simple-redis-cache-admin.php:647
 msgid "Redis key prefix"
 msgstr ""
 
 #. translators: %s: octal file mode.
-#: includes/class-simple-redis-cache-admin.php:644
+#: includes/class-simple-redis-cache-admin.php:647
 msgid "Define WP_CACHE_KEY_SALT with a non-empty value in wp-config.php to control the leading prefix for every plugin key."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:647
+#: includes/class-simple-redis-cache-admin.php:650
 msgid "Clear object cache and Clear all cache also delete every standard WordPress transient from this site database, including transients created by other plugins. Clear page cache does not."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:652
+#: includes/class-simple-redis-cache-admin.php:655
 msgid "Test saved connection"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:654
+#: includes/class-simple-redis-cache-admin.php:657
 msgid "Clear all cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:655
+#: includes/class-simple-redis-cache-admin.php:658
 msgid "Clear page cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:671
-msgid "Cloudflare status and manual purge"
-msgstr ""
-
-#: includes/class-simple-redis-cache-admin.php:674
-msgid "Credentials"
-msgstr ""
-
-#: includes/class-simple-redis-cache-admin.php:677
-msgid "A zone ID and API token are saved. Use Test Cloudflare connection to confirm they can purge this zone."
-msgstr ""
-
+#. translators: %s: date and time.
 #: includes/class-simple-redis-cache-admin.php:678
-msgid "Not configured. Save a zone ID and API token first."
+#, php-format
+msgid "Object-cache changes were lost during an outage at %s; the next request that reaches Redis invalidates the object cache."
 msgstr ""
 
 #: includes/class-simple-redis-cache-admin.php:683
+msgid "A request is invalidating the object cache after an outage."
+msgstr ""
+
+#. translators: %d: seconds.
+#: includes/class-simple-redis-cache-admin.php:689
+#, php-format
+msgid "The drop-ins skip Redis for %d more second after a connection failure."
+msgid_plural "The drop-ins skip Redis for %d more seconds after a connection failure."
+msgstr[0] ""
+msgstr[1] ""
+
+#: includes/class-simple-redis-cache-admin.php:694
+msgid "wp-content is not writable by PHP, so the drop-ins cannot record or clear outage markers."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:697
+msgid "No outage recorded."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:710
+msgid "Cloudflare status and manual purge"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:713
+msgid "Credentials"
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:716
+msgid "A zone ID and API token are saved. Use Test Cloudflare connection to confirm they can purge this zone."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:717
+msgid "Not configured. Save a zone ID and API token first."
+msgstr ""
+
+#: includes/class-simple-redis-cache-admin.php:722
 msgid "not set"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:687
+#: includes/class-simple-redis-cache-admin.php:726
 msgid "Testing the connection performs a real purge of the home page URL, because that is the only way to prove the token really holds the Cache Purge permission. The single side effect is that the home page is fetched from the origin once more."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:693
+#: includes/class-simple-redis-cache-admin.php:732
 msgid "Test Cloudflare connection"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:698
+#: includes/class-simple-redis-cache-admin.php:737
 msgid "Clear Cloudflare cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:701
+#: includes/class-simple-redis-cache-admin.php:740
 msgid "Clear Cloudflare cache purges the entire zone and does not touch this site's Redis caches."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:728
+#: includes/class-simple-redis-cache-admin.php:772
 msgid "Cache Rule for HTML on Cloudflare"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:729
+#: includes/class-simple-redis-cache-admin.php:773
 msgid "Only needed if Cloudflare also caches your HTML pages. Cloudflare builds its cache key from the method, host and URL — cookies are not part of it — so a page stored for an anonymous visitor is served to logged-in users too. That request never reaches WordPress, so no setting in this plugin, including Cache logged-in users, can prevent it. The expression below keeps such visitors out of the rule."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:735
+#: includes/class-simple-redis-cache-admin.php:779
 msgid "HTML page cache is disabled, so this plugin never marks a page as storable for Cloudflare. With the Edge TTL recommended below, Cloudflare will not cache HTML at all."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:736
+#: includes/class-simple-redis-cache-admin.php:780
 msgid "The CDN cache lifetime on the HTML Page Cache tab is 0, so this plugin never marks a page as storable for Cloudflare. With the Edge TTL recommended below, Cloudflare will not cache HTML until you set a lifetime."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:742
+#: includes/class-simple-redis-cache-admin.php:786
 msgid "In Cloudflare, open Cache Rules, edit the rule that caches HTML or create one, choose Edit expression and paste the expression below. Keep it inside that one rule instead of adding a separate bypass rule: several Cache Rules can match the same request."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:743
+#: includes/class-simple-redis-cache-admin.php:787
 msgid "Set Cache eligibility to Eligible for cache and Edge TTL to \"Use cache-control header if present, bypass cache if not\". This lets the plugin decide what the edge may store: it sends s-maxage only on an anonymous cache hit, never on a miss, a bypass or a logged-in request."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:744
+#: includes/class-simple-redis-cache-admin.php:788
 msgid "Save the rule, then purge the zone once with Clear Cloudflare cache so the copy stored before the change is gone."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:747
+#: includes/class-simple-redis-cache-admin.php:791
 msgid "Cloudflare Cache Rule expression"
 msgstr ""
 
 #. translators: 1: expression length, 2: Cloudflare's expression limit.
-#: includes/class-simple-redis-cache-admin.php:753
+#: includes/class-simple-redis-cache-admin.php:797
 #, php-format
 msgid "%1$d / %2$d characters."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:759
+#: includes/class-simple-redis-cache-admin.php:803
 msgid "Built from this site's address, its admin, login, REST and cron paths, and the Excluded request cookies on the HTML Page Cache tab. Change those settings and this expression changes with them."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:763
+#: includes/class-simple-redis-cache-admin.php:807
 msgid "This expression is longer than Cloudflare accepts. Shorten the Excluded request cookies list on the HTML Page Cache tab."
 msgstr ""
 
 #. translators: %s: comma-separated cookie patterns.
-#: includes/class-simple-redis-cache-admin.php:772
+#: includes/class-simple-redis-cache-admin.php:816
 #, php-format
 msgid "These cookie patterns are too vague to express in a Cloudflare rule on the free plan and were left out: %s. Visitors carrying them may still receive a page cached for anonymous visitors."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:780
+#: includes/class-simple-redis-cache-admin.php:824
 msgid "To check: a request made while logged in should return cf-cache-status: BYPASS or DYNAMIC, and an anonymous one HIT."
 msgstr ""
 
 #. translators: %s: Cloudflare API error.
-#: includes/class-simple-redis-cache-admin.php:808
+#: includes/class-simple-redis-cache-admin.php:852
 #, php-format
 msgid "Cloudflare check failed: %s"
 msgstr ""
 
 #. translators: 1: Cloudflare zone name, 2: zone status.
-#: includes/class-simple-redis-cache-admin.php:819
+#: includes/class-simple-redis-cache-admin.php:863
 #, php-format
 msgid "Cloudflare connection verified for zone %1$s (%2$s). The token can purge this zone."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:823
+#: includes/class-simple-redis-cache-admin.php:867
 msgid "Cloudflare connection verified. The token can purge this zone."
 msgstr ""
 
 #. translators: %s: Cloudflare API error.
-#: includes/class-simple-redis-cache-admin.php:839
+#: includes/class-simple-redis-cache-admin.php:883
 #, php-format
 msgid "Could not clear the Cloudflare cache: %s"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:845
+#: includes/class-simple-redis-cache-admin.php:889
 msgid "The Cloudflare cache was cleared for this zone."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:854
+#: includes/class-simple-redis-cache-admin.php:898
 msgid "Confirm clearing all cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:854
+#: includes/class-simple-redis-cache-admin.php:898
 msgid "Confirm clearing object cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:859
+#: includes/class-simple-redis-cache-admin.php:903
 msgid "This will invalidate both Redis cache layers and delete every standard WordPress transient from this site database, including transients created by other plugins."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:860
+#: includes/class-simple-redis-cache-admin.php:904
 msgid "This will invalidate the Redis object cache and delete every standard WordPress transient from this site database, including transients created by other plugins."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:864
+#: includes/class-simple-redis-cache-admin.php:908
 msgid "This action cannot restore the deleted database transients. Redis payloads are invalidated by generation and expire later according to their TTL."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:870
+#: includes/class-simple-redis-cache-admin.php:914
 msgid "Yes, clear all cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:870
+#: includes/class-simple-redis-cache-admin.php:914
 msgid "Yes, clear object cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:871
+#: includes/class-simple-redis-cache-admin.php:915
 msgid "Cancel"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:909
-#: includes/class-simple-redis-cache-page-invalidator.php:188
-#: includes/class-simple-redis-cache-plugin.php:442
-#: includes/class-simple-redis-cache-purger.php:38
-#: includes/class-simple-redis-cache-purger.php:68
+#: includes/class-simple-redis-cache-admin.php:953
+#: includes/class-simple-redis-cache-page-invalidator.php:403
+#: includes/class-simple-redis-cache-plugin.php:575
+#: includes/class-simple-redis-cache-purger.php:41
+#: includes/class-simple-redis-cache-purger.php:71
 msgid "Redis is unavailable."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:920
+#: includes/class-simple-redis-cache-admin.php:964
 msgid "Redis refused the temporary diagnostic write."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:925
+#: includes/class-simple-redis-cache-admin.php:969
 msgid "Redis returned a different value for the temporary diagnostic key."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:930
+#: includes/class-simple-redis-cache-admin.php:974
 msgid "Redis did not delete the temporary diagnostic key."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:953
+#: includes/class-simple-redis-cache-admin.php:997
 msgid "missing or unreadable"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:964
+#: includes/class-simple-redis-cache-admin.php:1008
 msgid "readable, but not owned by Simple Redis Cache"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:975
+#: includes/class-simple-redis-cache-admin.php:1019
 msgid "owned, but invalid"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:980
+#: includes/class-simple-redis-cache-admin.php:1024
 msgid "readable and synchronized with saved settings"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:981
+#: includes/class-simple-redis-cache-admin.php:1025
 msgid "readable, but different from saved settings"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1009
-#: includes/class-simple-redis-cache-admin.php:1222
+#: includes/class-simple-redis-cache-admin.php:1053
+#: includes/class-simple-redis-cache-admin.php:1266
 msgid "Cache warming"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1010
+#: includes/class-simple-redis-cache-admin.php:1054
 msgid "Select public WordPress content to request anonymously and store in the Redis HTML page cache. Valid existing cache HITs are verified and left unchanged."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1013
+#: includes/class-simple-redis-cache-admin.php:1057
 #: includes/class-simple-redis-cache-warmer.php:68
 msgid "Enable HTML page cache before warming it."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1018
+#: includes/class-simple-redis-cache-admin.php:1062
 msgid "Select all"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1019
+#: includes/class-simple-redis-cache-admin.php:1063
 msgid "Select none"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1024
+#: includes/class-simple-redis-cache-admin.php:1068
 msgid "System pages"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1037
+#: includes/class-simple-redis-cache-admin.php:1081
 msgid "Includes estimated pagination for the posts, author and date archives."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1041
+#: includes/class-simple-redis-cache-admin.php:1085
 msgid "Public post types"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1051
-#: includes/class-simple-redis-cache-admin.php:1066
+#: includes/class-simple-redis-cache-admin.php:1095
+#: includes/class-simple-redis-cache-admin.php:1110
 msgid "Standard"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1051
-#: includes/class-simple-redis-cache-admin.php:1066
+#: includes/class-simple-redis-cache-admin.php:1095
+#: includes/class-simple-redis-cache-admin.php:1110
 msgid "Custom"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1054
+#: includes/class-simple-redis-cache-admin.php:1098
 msgid "WordPress attachment pages are disabled, so media URLs will not be warmed."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1057
+#: includes/class-simple-redis-cache-admin.php:1101
 msgid "Each selection includes public, non-password-protected singular items and its public archive with estimated pagination when available."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1061
+#: includes/class-simple-redis-cache-admin.php:1105
 msgid "Public taxonomies"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1069
+#: includes/class-simple-redis-cache-admin.php:1113
 msgid "Each selection includes non-empty public term archives and their estimated pagination."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1073
+#: includes/class-simple-redis-cache-admin.php:1117
 msgid "Sites using plain/query-string permalinks must enable query-string page caching before those URLs can be warmed."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1074
+#: includes/class-simple-redis-cache-admin.php:1118
 msgid "When enabled, search results and 404 pages can be cached as they are requested, but they do not have a finite discoverable URL list and are not included in warming."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1075
+#: includes/class-simple-redis-cache-admin.php:1119
 msgid "Warming generates the anonymous no-cookie variant. Language variants selected by vary cookies are not warmed. Keep this tab open until the process finishes."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1078
+#: includes/class-simple-redis-cache-admin.php:1122
 msgid "Stop"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1114
+#: includes/class-simple-redis-cache-admin.php:1158
 msgid "You are not allowed to manage Redis cache settings."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1122
+#: includes/class-simple-redis-cache-admin.php:1166
 msgid "Cache warming accepts POST requests only."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1125
+#: includes/class-simple-redis-cache-admin.php:1169
 msgid "You are not allowed to warm this cache."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1128
+#: includes/class-simple-redis-cache-admin.php:1172
 msgid "The cache-warming security token is invalid or expired."
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1223
+#: includes/class-simple-redis-cache-admin.php:1267
 msgid "Status"
 msgstr ""
 
-#: includes/class-simple-redis-cache-admin.php:1240
+#: includes/class-simple-redis-cache-admin.php:1284
 msgid "Cache settings sections"
 msgstr ""
 
@@ -1074,27 +1125,27 @@ msgstr ""
 msgid "The Cloudflare API rejected the request (HTTP %d)."
 msgstr ""
 
-#: includes/class-simple-redis-cache-config.php:221
+#: includes/class-simple-redis-cache-config.php:252
 msgid "The early cache configuration file is owned by another component and was not overwritten."
 msgstr ""
 
-#: includes/class-simple-redis-cache-config.php:226
+#: includes/class-simple-redis-cache-config.php:257
 msgid "Could not write the early Redis cache configuration."
 msgstr ""
 
-#: includes/class-simple-redis-cache-config.php:235
+#: includes/class-simple-redis-cache-config.php:266
 msgid "The early cache configuration changed during installation and was not overwritten."
 msgstr ""
 
-#: includes/class-simple-redis-cache-config.php:241
+#: includes/class-simple-redis-cache-config.php:272
 msgid "Could not install the early Redis cache configuration."
 msgstr ""
 
-#: includes/class-simple-redis-cache-config.php:258
+#: includes/class-simple-redis-cache-config.php:289
 msgid "The early cache configuration file is not owned by Simple Redis Cache and was not removed."
 msgstr ""
 
-#: includes/class-simple-redis-cache-config.php:262
+#: includes/class-simple-redis-cache-config.php:293
 msgid "Could not remove the generated early Redis cache configuration."
 msgstr ""
 
@@ -1181,65 +1232,104 @@ msgid "Redis-only persistent object caching and full-page HTML caching for a sin
 msgstr ""
 
 #: includes/class-simple-redis-cache-github-updater.php:103
-msgid "Version 0.7.1 makes the plugin work on PHP 8.1, its declared minimum: two return types used syntax that only PHP 8.2 and newer accept, so on PHP 8.1 the plugin failed with a fatal error as soon as WordPress loaded it. The early page-cache loader also no longer overwrites a global $config variable defined in wp-config.php."
+msgid "Version 0.8.0 fixes the findings of a code review: changes lost during a Redis outage no longer come back afterwards, a stalled Redis is skipped for 15 seconds, the home page, archives, search and 404 pages are invalidated when content is published, menus, widgets, the theme and updates clear the page cache, 404 and search pages live at most 10 minutes, stored pages are compressed and signed, a copied site gets its own cache namespace, and updates are pinned to one commit."
+msgstr ""
+
+#. translators: %s: Redis or Cloudflare error.
+#: includes/class-simple-redis-cache-page-invalidator.php:322
+#, php-format
+msgid "The site changed, but the HTML page cache could not be cleared: %s"
 msgstr ""
 
 #. translators: %s: Redis connection or command error.
-#: includes/class-simple-redis-cache-page-invalidator.php:187
+#: includes/class-simple-redis-cache-page-invalidator.php:402
 #, php-format
 msgid "Could not invalidate page cache related to the updated post: %s"
 msgstr ""
 
 #. translators: %d: number of URLs left on the CDN.
-#: includes/class-simple-redis-cache-page-invalidator.php:247
+#: includes/class-simple-redis-cache-page-invalidator.php:469
 #, php-format
 msgid "This update touched more URLs than one Cloudflare purge can carry, so %d of them were left on the CDN. Use Clear Cloudflare cache to clear the whole zone."
 msgstr ""
 
 #. translators: %s: Cloudflare API error.
-#: includes/class-simple-redis-cache-page-invalidator.php:259
+#: includes/class-simple-redis-cache-page-invalidator.php:481
 #, php-format
 msgid "Could not clear the Cloudflare cache for the updated content: %s"
 msgstr ""
 
-#: includes/class-simple-redis-cache-plugin.php:65
+#. translators: %s: Cloudflare API error.
+#: includes/class-simple-redis-cache-plugin.php:75
+#: includes/class-simple-redis-cache-purger.php:108
+#, php-format
+msgid "The local cache was cleared, but the Cloudflare cache was not: %s"
+msgstr ""
+
+#. translators: %s: cache scope (all, object or page).
+#: includes/class-simple-redis-cache-plugin.php:84
+#, php-format
+msgid "Simple Redis Cache cleared: %s."
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:120
 msgid "Simple Redis Cache supports single-site WordPress installations only and was not activated."
 msgstr ""
 
-#: includes/class-simple-redis-cache-plugin.php:66
+#: includes/class-simple-redis-cache-plugin.php:121
 msgid "Plugin activation refused"
 msgstr ""
 
-#: includes/class-simple-redis-cache-plugin.php:180
+#: includes/class-simple-redis-cache-plugin.php:237
 msgid "The Redis object namespace was invalidated, but existing database transients were retained. Use the confirmed Clear object cache action if those database values must also be removed."
 msgstr ""
 
-#: includes/class-simple-redis-cache-plugin.php:191
+#: includes/class-simple-redis-cache-plugin.php:248
 msgid "Simple Redis Cache is disabled because this plugin supports single-site WordPress installations only."
 msgstr ""
 
-#: includes/class-simple-redis-cache-plugin.php:281
+#: includes/class-simple-redis-cache-plugin.php:337
+msgid "Simple Redis Cache detected a copied or moved site but could not save its new cache identity. Both cache layers stay disabled."
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:345
+msgid "Simple Redis Cache detected a copied or moved site but could not install its new cache configuration. Both cache layers stay disabled until the files in wp-content can be written."
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:353
+msgid "Simple Redis Cache detected that this site was copied or moved. WP_CACHE_KEY_SALT is set in wp-config.php, so this copy would share the cache key prefix with the original site; both cache layers were turned off. If the original uses the same Redis server and database, give this copy a different WP_CACHE_KEY_SALT, then enable the layers again."
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:354
+msgid "Simple Redis Cache detected that this site was copied or moved, and gave it its own cache namespace."
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:359
+msgid "The Cloudflare zone ID and API token were removed because they belong to the original site. Enter this site's own Cloudflare details if it has any."
+msgstr ""
+
+#: includes/class-simple-redis-cache-plugin.php:412
 msgid "Simple Redis Cache could not save its configuration migration. The existing cache runtime was left unchanged."
 msgstr ""
 
-#: includes/class-simple-redis-cache-plugin.php:431
+#: includes/class-simple-redis-cache-plugin.php:564
 msgid "Cache settings changed concurrently while the runtime was being synchronized. Both managed cache layers were disabled and will be retried from the authoritative saved settings on the next administrator request."
 msgstr ""
 
-#: includes/class-simple-redis-cache-plugin.php:432
+#: includes/class-simple-redis-cache-plugin.php:565
 msgid "The new cache settings are pending because Redis invalidation failed. Both managed cache layers were disabled to prevent stale entries and will be retried on the next administrator request."
 msgstr ""
 
 #. translators: %s: Redis connection error.
-#: includes/class-simple-redis-cache-plugin.php:439
-#: includes/class-simple-redis-cache-purger.php:37
+#: includes/class-simple-redis-cache-plugin.php:572
+#: includes/class-simple-redis-cache-purger.php:40
 #, php-format
 msgid "Could not clear object cache: %s"
 msgstr ""
 
 #. translators: %s: Redis connection error.
-#: includes/class-simple-redis-cache-plugin.php:440
-#: includes/class-simple-redis-cache-purger.php:67
+#: includes/class-simple-redis-cache-plugin.php:573
+#: includes/class-simple-redis-cache-purger.php:70
 #, php-format
 msgid "Could not clear page cache: %s"
 msgstr ""
@@ -1248,62 +1338,64 @@ msgstr ""
 msgid "Simple Redis Cache supports single-site WordPress installations only."
 msgstr ""
 
-#. translators: %s: Cloudflare API error.
-#: includes/class-simple-redis-cache-purger.php:105
-#, php-format
-msgid "The local cache was cleared, but the Cloudflare cache was not: %s"
+#: includes/class-simple-redis-cache-purger.php:27
+msgid "These cache settings were copied from another site. Open any wp-admin page as an administrator so Simple Redis Cache can give this site its own cache namespace, then try again."
 msgstr ""
 
-#: includes/class-simple-redis-cache-purger.php:137
+#: includes/class-simple-redis-cache-purger.php:141
 msgid "Could not delete transient cache mirrors from the database."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:168
+#: includes/class-simple-redis-cache-redis.php:366
 msgid "The PhpRedis extension is not installed."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:169
+#: includes/class-simple-redis-cache-redis.php:367
 msgid "Redis host or socket path is empty."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:170
+#: includes/class-simple-redis-cache-redis.php:368
 msgid "Unable to connect to Redis."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:171
+#: includes/class-simple-redis-cache-redis.php:369
 msgid "Unable to disable the PhpRedis serializer."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:172
+#: includes/class-simple-redis-cache-redis.php:370
 msgid "Unable to disable PhpRedis compression."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:173
+#: includes/class-simple-redis-cache-redis.php:371
 msgid "Unable to clear the PhpRedis key prefix."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:174
+#: includes/class-simple-redis-cache-redis.php:372
 msgid "Redis authentication failed."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:175
+#: includes/class-simple-redis-cache-redis.php:373
 msgid "Unable to select the Redis database."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:176
+#: includes/class-simple-redis-cache-redis.php:374
 msgid "Redis returned an invalid cache generation."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:177
+#: includes/class-simple-redis-cache-redis.php:375
 msgid "Redis could not increment the cache generation."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:178
+#: includes/class-simple-redis-cache-redis.php:376
 msgid "Redis returned an invalid page content version."
 msgstr ""
 
-#: includes/class-simple-redis-cache-redis.php:179
+#: includes/class-simple-redis-cache-redis.php:377
 msgid "Redis could not invalidate page content versions."
+msgstr ""
+
+#: includes/class-simple-redis-cache-redis.php:378
+msgid "Redis was skipped after a recent connection failure."
 msgstr ""
 
 #: includes/class-simple-redis-cache-warmer.php:44

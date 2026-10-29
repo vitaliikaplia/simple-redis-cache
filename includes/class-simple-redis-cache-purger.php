@@ -11,7 +11,7 @@ final class Simple_Redis_Cache_Purger {
 	/**
 	 * Purge a logical cache namespace without FLUSHDB/FLUSHALL.
 	 *
-	 * @return array{object_generation?:int,page_generation?:int,db_rows_deleted?:int,cloudflare?:bool}|WP_Error
+	 * @return array{object_generation?:int,page_generation?:int,db_rows_deleted?:int,cloudflare?:bool,cloudflare_error?:string}|WP_Error
 	 */
 	public static function purge( string $scope = 'all' ): array|WP_Error {
 		if ( is_multisite() ) {
@@ -23,7 +23,10 @@ final class Simple_Redis_Cache_Purger {
 		}
 
 		$config = Simple_Redis_Cache_Config::get();
-		$redis  = new Simple_Redis_Cache_Redis( $config );
+		if ( Simple_Redis_Cache_Config::is_foreign( $config ) ) {
+			return new WP_Error( 'src_copied_site', __( 'These cache settings were copied from another site. Open any wp-admin page as an administrator so Simple Redis Cache can give this site its own cache namespace, then try again.', 'simple-redis-cache' ) );
+		}
+		$redis = new Simple_Redis_Cache_Redis( $config );
 		$result = array();
 		$errors = new WP_Error();
 
@@ -107,7 +110,8 @@ final class Simple_Redis_Cache_Purger {
 					),
 					'warning'
 				);
-				$result['cloudflare'] = false;
+				$result['cloudflare']       = false;
+				$result['cloudflare_error'] = implode( ' ', $purged->get_error_messages() );
 			} else {
 				$result['cloudflare'] = true;
 			}
