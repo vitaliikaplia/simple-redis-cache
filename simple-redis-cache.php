@@ -28,6 +28,7 @@ require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-config.
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-dropins.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-cloudflare.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-purger.php';
+require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-page-capture.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-page-invalidator.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-warmer.php';
 require_once SIMPLE_REDIS_CACHE_DIR . 'includes/class-simple-redis-cache-admin.php';
