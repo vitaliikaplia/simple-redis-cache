@@ -3,7 +3,7 @@ Contributors: vitaliikaplia
 Tags: redis, object cache, page cache, performance
 Requires at least: 6.5
 Requires PHP: 8.1
-Stable tag: 0.8.0
+Stable tag: 0.9.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -16,7 +16,7 @@ Simple Redis Cache supports single-site WordPress installations only; activation
 * A persistent WordPress object cache via `wp-content/object-cache.php`.
 * An early full-page HTML cache via `wp-content/advanced-cache.php`.
 
-There is no file-based cache, minification, or scheduled/background preload. CDN support is limited to two things: an optional Cache-Control lifetime added to page-cache hits, and optional Cloudflare cache purging through a scoped API token. No other CDN provider is supported, and the Cloudflare client only reads the configured zone and purges it. Independent targeted invalidation settings can expire the updated post, page, or public custom post type, its WPML/Polylang translations, the public taxonomy term archives related to those posts, and the listing pages — home, posts page, generic archives, search and 404 — without clearing unrelated page-cache entries. Site-wide changes such as menus, widgets, the theme or updates can clear the whole page cache, and `wp simple-redis-cache purge [all|object|page]` clears a layer from the command line.
+There is no file-based cache, minification, or scheduled/background preload. CDN support is limited to two things: an optional Cache-Control lifetime added to page-cache hits, and optional Cloudflare cache purging through a scoped API token. No other CDN provider is supported, and the Cloudflare client only reads the configured zone and purges it. Independent targeted invalidation settings can expire the updated post, page, or public custom post type, its WPML/Polylang translations, the public taxonomy term archives related to those posts, and the listing pages — home, posts page, generic archives, search and 404 — without clearing unrelated page-cache entries. Site-wide changes such as menus, widgets, the theme or updates can clear the whole page cache, and `wp simple-redis-cache purge [all|object|page]` clears a layer from the command line. Instead of targeted invalidation, any change of published content can clear the whole HTML page cache, optionally together with the object cache, and the whole Cloudflare zone, once per request.
 
 Connection settings are configured in the WordPress admin. A non-empty `WP_CACHE_KEY_SALT`, when defined in `wp-config.php`, is preserved byte-for-byte as the base prefix for every Redis key created by this plugin. A missing or empty value uses the generated per-site fallback prefix.
 
@@ -105,6 +105,10 @@ because another WordPress cache may use it.
 * A copied or moved site recognizes a generated configuration or saved settings written by another installation (the real path of `wp-content`, the database name and the table prefix — the same for the web and WP-CLI), keeps both drop-ins inert and leaves the original's Redis namespace untouched, then derives its own key prefix and page secret on the next administrator request. The copied Cloudflare zone ID and token are removed, so the copy cannot purge the original's zone. With `WP_CACHE_KEY_SALT` set the prefix stays shared, so both cache layers are turned off on the copy until an administrator changes the salt or confirms by enabling them again. Moving `wp-content` to another directory counts as a move, so caching resumes only after the next administrator visit.
 
 == Changelog ==
+
+= 0.9.0 =
+* HTML page cache: a new setting, "Clear the whole cache when content changes", clears the whole HTML page cache, or the page and the object cache together, once per request after a post, page or public custom post type is published, updated, unpublished, scheduled or deleted, its categories or tags change, a public term is renamed or deleted, or the site changes (menus, widgets, the Customizer, the theme, updates). Drafts, revisions and autosaves clear nothing. Off by default; the targeted invalidation stays as it was.
+* Cloudflare: a new setting, "Clear the whole Cloudflare zone when content changes", purges the whole zone after the same changes, once the page cache has been cleared, instead of the exact URLs. On a site without the page cache it purges the zone on its own. Off by default.
 
 = 0.8.0 =
 * Object cache: a change that could not reach Redis — because Redis was down, timed out or ran out of memory mid-request — is no longer lost silently. The request leaves a marker outside Redis, and the first request that reaches Redis again invalidates the whole object namespace, so a value deleted or replaced during the outage can no longer come back for up to the maximum TTL.

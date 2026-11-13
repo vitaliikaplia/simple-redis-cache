@@ -27,6 +27,10 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	private static array $pending_cloudflare_term_urls = array();
 	private static bool $shutdown_scheduled = false;
 	private static bool $site_purge_scheduled = false;
+	/** Whether a whole-cache purge for changed content waits for shutdown. */
+	private static bool $content_purge_scheduled = false;
+	/** Whether this request already cleared everything for changed content. */
+	private static bool $content_purged = false;
 
 	/**
 	 * Non-public post types the Site Editor saves: navigation menus, templates and
@@ -89,8 +93,7 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	 * @param WP_Post $post_before
 	 */
 	public static function post_updated( int $post_id, mixed $post_after, mixed $post_before ): void {
-		$config = Simple_Redis_Cache_Config::get();
-		if ( ! self::is_enabled( $config ) || self::is_ignored_post( $post_id ) ) {
+		if ( self::is_ignored_post( $post_id ) ) {
 			return;
 		}
 
@@ -99,6 +102,16 @@ final class Simple_Redis_Cache_Page_Invalidator {
 			$post_type = (string) ( $post_before->post_type ?? '' );
 		}
 		if ( ! self::is_frontend_post_type( $post_type ) ) {
+			return;
+		}
+
+		// A draft edit changes nothing visitors can see.
+		if ( self::is_public_post( $post_before ) || self::is_public_post( $post_after ) ) {
+			self::content_changed();
+		}
+
+		$config = Simple_Redis_Cache_Config::get();
+		if ( ! self::is_enabled( $config ) ) {
 			return;
 		}
 
@@ -148,6 +161,8 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	 */
 	public static function set_object_terms( int $object_id, mixed $terms, array $tt_ids, string $taxonomy, bool $append, array $old_tt_ids ): void {
 		unset( $terms, $append );
+		self::terms_of_public_post_changed( $object_id, $taxonomy );
+
 		$config = Simple_Redis_Cache_Config::get();
 		if (
 			! self::is_enabled( $config ) ||
@@ -196,6 +211,7 @@ final class Simple_Redis_Cache_Page_Invalidator {
 			return;
 		}
 
+		self::post_content_changed( (int) ( $post->ID ?? 0 ), (string) ( $post->post_type ?? '' ) );
 		self::queue_post( (int) ( $post->ID ?? 0 ), (string) ( $post->post_type ?? '' ) );
 	}
 
@@ -216,6 +232,7 @@ final class Simple_Redis_Cache_Page_Invalidator {
 			return;
 		}
 
+		self::post_content_changed( $post_id, (string) ( $post->post_type ?? '' ) );
 		$config = Simple_Redis_Cache_Config::get();
 		if ( self::is_enabled( $config ) ) {
 			self::remember_cloudflare_url( $post, $config );
@@ -252,6 +269,9 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	 */
 	public static function term_changed( int $term_id, int $term_taxonomy_id, string $taxonomy ): void {
 		unset( $term_id );
+		if ( self::is_viewable_taxonomy( $taxonomy ) ) {
+			self::content_changed();
+		}
 		self::queue_term( $term_taxonomy_id, $taxonomy, get_term_by( 'term_taxonomy_id', $term_taxonomy_id, $taxonomy ) );
 	}
 
@@ -263,6 +283,9 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	 */
 	public static function term_deleted( int $term_id, int $term_taxonomy_id, string $taxonomy, mixed $deleted_term = null, mixed $object_ids = null ): void {
 		unset( $term_id, $object_ids );
+		if ( self::is_viewable_taxonomy( $taxonomy ) ) {
+			self::content_changed();
+		}
 		self::queue_term( $term_taxonomy_id, $taxonomy, $deleted_term );
 	}
 
@@ -283,6 +306,11 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	/** Menus, widgets, the Customizer, the theme or an update changed every page. */
 	public static function site_changed(): void {
 		$config = Simple_Redis_Cache_Config::get();
+		// The whole-cache purge for content changes covers site changes as well.
+		if ( self::purges_everything_on_change( $config ) ) {
+			self::content_changed();
+			return;
+		}
 		if ( empty( $config['page']['enabled'] ) || empty( $config['page']['purge_on_site_change'] ) || self::$site_purge_scheduled ) {
 			return;
 		}
@@ -314,7 +342,7 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	/** Clear the whole HTML page cache once, after the request's changes are done. */
 	public static function flush_site_change(): void {
 		self::$site_purge_scheduled = false;
-		$result = Simple_Redis_Cache_Purger::purge( 'page' );
+		$result = Simple_Redis_Cache_Purger::purge( 'page', 'purge_on_content_change' );
 		if ( is_wp_error( $result ) ) {
 			Simple_Redis_Cache_Admin::queue_notice(
 				sprintf(
@@ -327,10 +355,128 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		}
 	}
 
+	/**
+	 * Public content changed: when the settings ask for it, clear the whole cache
+	 * (and the Cloudflare zone) once at the end of the request.
+	 */
+	public static function content_changed(): void {
+		if ( self::$content_purge_scheduled || self::$content_purged ) {
+			return;
+		}
+
+		$config = Simple_Redis_Cache_Config::get();
+		if ( Simple_Redis_Cache_Config::is_foreign( $config ) || ! self::purges_everything_on_change( $config ) ) {
+			return;
+		}
+
+		self::$content_purge_scheduled = true;
+		add_action( 'shutdown', array( self::class, 'flush_content_change' ), PHP_INT_MAX );
+	}
+
+	/**
+	 * Clear everything the settings name, once, after the request's changes are
+	 * done. The targeted flush of this request has nothing left to do then.
+	 */
+	public static function flush_content_change(): void {
+		self::$content_purge_scheduled = false;
+
+		$config = Simple_Redis_Cache_Config::get();
+		$scope  = self::content_purge_scope( $config );
+		if ( 'off' === $scope ) {
+			/*
+			 * No page cache here: the edge is the only HTML cache, so it can be purged
+			 * on its own. With the page cache on, the targeted flush purges the zone
+			 * once Redis no longer serves the old page.
+			 */
+			if ( empty( $config['page']['enabled'] ) && Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_content_change', $config ) ) {
+				self::$content_purged = true;
+				self::purge_zone( $config );
+			}
+			return;
+		}
+
+		self::$content_purged = true;
+		self::reset_pending();
+		$result = Simple_Redis_Cache_Purger::purge( $scope, 'purge_on_content_change' );
+		if ( is_wp_error( $result ) ) {
+			Simple_Redis_Cache_Admin::queue_notice(
+				sprintf(
+					/* translators: %s: Redis or Cloudflare error. */
+					__( 'The content changed, but the cache could not be cleared: %s', 'simple-redis-cache' ),
+					implode( ' ', $result->get_error_messages() )
+				),
+				'warning'
+			);
+		}
+	}
+
+	/**
+	 * What a content change clears as a whole: "off" (only what changed), "page" or
+	 * "all" (the page and the object cache).
+	 *
+	 * @param array<string, mixed> $config
+	 */
+	public static function content_purge_scope( array $config ): string {
+		$scope = (string) ( $config['page']['purge_on_content_change'] ?? 'off' );
+
+		return in_array( $scope, array( 'page', 'all' ), true ) ? $scope : 'off';
+	}
+
+	/**
+	 * Whether a content change goes to flush_content_change(): a whole-cache scope, or
+	 * a Cloudflare zone purge that has no page cache to wait for.
+	 *
+	 * @param array<string, mixed> $config
+	 */
+	private static function purges_everything_on_change( array $config ): bool {
+		return 'off' !== self::content_purge_scope( $config )
+			|| ( empty( $config['page']['enabled'] ) && Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_content_change', $config ) );
+	}
+
+	/** A published entry of a post type visitors can see changed. */
+	private static function post_content_changed( int $post_id, string $post_type ): void {
+		if ( ! self::is_ignored_post( $post_id ) && self::is_frontend_post_type( $post_type ) ) {
+			self::content_changed();
+		}
+	}
+
+	/** Categories, tags or other public terms of a published post changed. */
+	private static function terms_of_public_post_changed( int $post_id, string $taxonomy ): void {
+		if ( self::is_ignored_post( $post_id ) || ! self::is_viewable_taxonomy( $taxonomy ) ) {
+			return;
+		}
+
+		$post = get_post( $post_id );
+		$type = is_object( $post ) ? (string) ( $post->post_type ?? '' ) : '';
+		if ( self::is_public_post( $post ) && self::is_frontend_post_type( $type ) && self::taxonomy_applies_to_post_type( $taxonomy, $type ) ) {
+			self::content_changed();
+		}
+	}
+
+	/** @param array<string, mixed> $config */
+	private static function purge_zone( array $config ): void {
+		$purged = Simple_Redis_Cache_Cloudflare::purge_everything( $config );
+		if ( is_wp_error( $purged ) ) {
+			Simple_Redis_Cache_Admin::queue_notice(
+				sprintf(
+					/* translators: %s: Cloudflare API error. */
+					__( 'Could not clear the Cloudflare cache for the updated content: %s', 'simple-redis-cache' ),
+					implode( ' ', $purged->get_error_messages() )
+				),
+				'warning'
+			);
+		}
+	}
+
 	/** Apply one atomic Redis version change after every save hook has completed. */
 	public static function flush(): void {
 		self::$shutdown_scheduled = false;
 		if ( empty( self::$pending_post_ids ) && empty( self::$pending_term_taxonomy_ids ) && ! self::$pending_listing ) {
+			return;
+		}
+		// The whole cache is (or is about to be) cleared for this request's changes.
+		if ( self::$content_purged || ( self::$content_purge_scheduled && 'off' !== self::content_purge_scope( Simple_Redis_Cache_Config::get() ) ) ) {
+			self::reset_pending();
 			return;
 		}
 
@@ -422,6 +568,11 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	 * @param string[]                                   $term_urls     Term addresses seen before a rename or deletion.
 	 */
 	private static function purge_cloudflare_urls( array $resources, array $captured_urls, array $post_types, array $config, array $term_urls = array() ): void {
+		// The whole zone, when asked for, makes the exact addresses unnecessary.
+		if ( Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_content_change', $config ) ) {
+			self::purge_zone( $config );
+			return;
+		}
 		if ( ! Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_post_update', $config ) ) {
 			return;
 		}

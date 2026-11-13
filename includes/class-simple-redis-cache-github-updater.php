@@ -100,7 +100,7 @@ final class Simple_Redis_Cache_GitHub_Updater {
 			'download_link' => $remote_data['package'] ?? '',
 			'sections'      => array(
 				'description' => '<p>' . esc_html__( 'Redis-only persistent object caching and full-page HTML caching for a single-site WordPress installation.', 'simple-redis-cache' ) . '</p>',
-				'changelog'   => '<p>' . esc_html__( 'Version 0.8.0 fixes the findings of a code review: changes lost during a Redis outage no longer come back afterwards, a stalled Redis is skipped for 15 seconds, the home page, archives, search and 404 pages are invalidated when content is published, menus, widgets, the theme and updates clear the page cache, 404 and search pages live at most 10 minutes, stored pages are compressed and signed, a copied site gets its own cache namespace, and updates are pinned to one commit.', 'simple-redis-cache' ) . '</p>',
+				'changelog'   => '<p>' . esc_html__( 'Version 0.9.0 can clear the whole cache when content changes: the whole HTML page cache, or the page and the object cache together, and the whole Cloudflare zone, once per request after published content, its terms or the site change. Version 0.8.0 fixes the findings of a code review: changes lost during a Redis outage no longer come back afterwards, a stalled Redis is skipped for 15 seconds, the home page, archives, search and 404 pages are invalidated when content is published, menus, widgets, the theme and updates clear the page cache, 404 and search pages live at most 10 minutes, stored pages are compressed and signed, a copied site gets its own cache namespace, and updates are pinned to one commit.', 'simple-redis-cache' ) . '</p>',
 			),
 		);
 	}

@@ -178,6 +178,18 @@ final class Simple_Redis_Cache_Admin {
 		self::add_field( 'page', 'invalidate_term_archives_on_post_update', __( 'Clear related taxonomy archives when a post is updated', 'simple-redis-cache' ), 'checkbox', array(), __( 'Invalidates archives of current, previous and new assigned terms in public standard and custom taxonomies, including hierarchical parents and terms assigned to WPML or Polylang translations, and the archive of a term that is renamed or deleted. Unrelated taxonomy archives remain cached.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'invalidate_listings_on_post_update', __( 'Clear listing pages when content is published', 'simple-redis-cache' ), 'checkbox', array(), __( 'When public content is published, changed, unpublished, scheduled or deleted, invalidates the front page, the posts page, post type, author and date archives, search results and cached 404 pages, with all their pagination. Taxonomy archives use the option above when it is enabled, and this one otherwise.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'purge_on_site_change', __( 'Clear the page cache when the site changes', 'simple-redis-cache' ), 'checkbox', array(), __( 'Clears the whole HTML page cache after menus, widgets, Customizer settings, the active theme, core site settings, ACF options pages or a plugin, theme or core update change. Deploys that bypass WordPress can run: wp simple-redis-cache purge page', 'simple-redis-cache' ) );
+		self::add_field(
+			'page',
+			'purge_on_content_change',
+			__( 'Clear the whole cache when content changes', 'simple-redis-cache' ),
+			'select',
+			array(
+				'off'  => __( 'No, clear only what changed (the options above)', 'simple-redis-cache' ),
+				'page' => __( 'The whole HTML page cache', 'simple-redis-cache' ),
+				'all'  => __( 'The whole HTML page cache and object cache', 'simple-redis-cache' ),
+			),
+			__( 'Once per request, after a post, page or custom post type is published, updated, unpublished, scheduled or deleted, its categories or tags change, a term is renamed or deleted, or the site changes as described above. Drafts, revisions and autosaves clear nothing. The object cache is cleared as Clear all cache does, transients included, so the pages after a change are slower until the cache fills again. Simplest and always correct, at the cost of a cold cache after every change.', 'simple-redis-cache' )
+		);
 		self::add_field( 'page', 'cache_logged_in', __( 'Cache logged-in users', 'simple-redis-cache' ), 'checkbox', array(), __( 'Disabled is safest. Logged-in variants are isolated by session when enabled.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'cache_home', __( 'Cache home page', 'simple-redis-cache' ), 'checkbox' );
 		self::add_field( 'page', 'cache_singular', __( 'Cache posts, pages and CPTs', 'simple-redis-cache' ), 'checkbox' );
@@ -209,6 +221,7 @@ final class Simple_Redis_Cache_Admin {
 		self::add_field( 'cloudflare', 'purge_on_clear_all', __( 'Clear Cloudflare with Clear all cache', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the whole Cloudflare zone whenever the Clear all cache action runs.', 'simple-redis-cache' ) );
 		self::add_field( 'cloudflare', 'purge_on_clear_page', __( 'Clear Cloudflare with Clear page cache', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the whole Cloudflare zone whenever the Clear page cache action runs.', 'simple-redis-cache' ) );
 		self::add_field( 'cloudflare', 'purge_on_post_update', __( 'Clear Cloudflare when content is updated', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the exact URLs this plugin already invalidates on the HTML Page Cache tab, so it requires those options to be enabled. The updated entries, the first page of related term archives and, for listing pages, the home page of each language, the posts page and the post type archive are purged; deeper pagination is not, because Cloudflare purges exact URLs.', 'simple-redis-cache' ) );
+		self::add_field( 'cloudflare', 'purge_on_content_change', __( 'Clear the whole Cloudflare zone when content changes', 'simple-redis-cache' ), 'checkbox', array(), __( 'Purge the whole zone once per request after the same changes as "Clear the whole cache when content changes" on the HTML Page Cache tab, and after site changes. It runs once the page cache here has been cleared, so the edge never fetches a stale page back; with the page cache disabled it runs on its own. Replaces the exact-URL purge above, and every page is fetched from the site again afterwards.', 'simple-redis-cache' ) );
 	}
 
 	/**

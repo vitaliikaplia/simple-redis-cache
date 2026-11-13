@@ -11,9 +11,11 @@ final class Simple_Redis_Cache_Purger {
 	/**
 	 * Purge a logical cache namespace without FLUSHDB/FLUSHALL.
 	 *
+	 * @param string $cloudflare_trigger A further Cloudflare setting that also asks for
+	 *                                   the whole zone with this purge (an automatic one).
 	 * @return array{object_generation?:int,page_generation?:int,db_rows_deleted?:int,cloudflare?:bool,cloudflare_error?:string}|WP_Error
 	 */
-	public static function purge( string $scope = 'all' ): array|WP_Error {
+	public static function purge( string $scope = 'all', string $cloudflare_trigger = '' ): array|WP_Error {
 		if ( is_multisite() ) {
 			return new WP_Error( 'src_multisite_unsupported', __( 'Simple Redis Cache supports single-site WordPress installations only.', 'simple-redis-cache' ) );
 		}
@@ -89,11 +91,9 @@ final class Simple_Redis_Cache_Purger {
 		 * the CDN on stale HTML for as long as that database error persists.
 		 */
 		$trigger = 'all' === $scope ? 'purge_on_clear_all' : ( 'page' === $scope ? 'purge_on_clear_page' : '' );
-		if (
-			'' !== $trigger &&
-			isset( $result['page_generation'] ) &&
-			Simple_Redis_Cache_Cloudflare::should_purge_for( $trigger, $config )
-		) {
+		$edge    = ( '' !== $trigger && Simple_Redis_Cache_Cloudflare::should_purge_for( $trigger, $config ) )
+			|| ( '' !== $cloudflare_trigger && Simple_Redis_Cache_Cloudflare::should_purge_for( $cloudflare_trigger, $config ) );
+		if ( $edge && isset( $result['page_generation'] ) ) {
 			$purged = Simple_Redis_Cache_Cloudflare::purge_everything( $config );
 			if ( is_wp_error( $purged ) ) {
 				/*

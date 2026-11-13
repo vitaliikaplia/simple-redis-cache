@@ -163,6 +163,7 @@ final class Simple_Redis_Cache_Config {
 			'invalidate_term_archives_on_post_update' => ! empty( $page_input['invalidate_term_archives_on_post_update'] ),
 			'invalidate_listings_on_post_update' => ! empty( $page_input['invalidate_listings_on_post_update'] ),
 			'purge_on_site_change'     => ! empty( $page_input['purge_on_site_change'] ),
+			'purge_on_content_change'  => in_array( (string) ( $page_input['purge_on_content_change'] ?? 'off' ), array( 'page', 'all' ), true ) ? (string) $page_input['purge_on_content_change'] : 'off',
 			'cache_logged_in'          => ! empty( $page_input['cache_logged_in'] ),
 			'cache_home'               => ! empty( $page_input['cache_home'] ),
 			'cache_singular'           => ! empty( $page_input['cache_singular'] ),
@@ -206,6 +207,7 @@ final class Simple_Redis_Cache_Config {
 			'purge_on_clear_all'   => ! empty( $cloudflare_input['purge_on_clear_all'] ),
 			'purge_on_clear_page'  => ! empty( $cloudflare_input['purge_on_clear_page'] ),
 			'purge_on_post_update' => ! empty( $cloudflare_input['purge_on_post_update'] ),
+			'purge_on_content_change' => ! empty( $cloudflare_input['purge_on_content_change'] ),
 		);
 
 		$home_url    = home_url( '/' );

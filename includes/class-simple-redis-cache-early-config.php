@@ -72,6 +72,9 @@ final class Simple_Redis_Cache_Early_Config {
 				'invalidate_listings_on_post_update' => true,
 				// Menus, widgets, the Customizer, the theme and updates change every page.
 				'purge_on_site_change'    => true,
+				// Clear the whole cache instead, once per request, whenever public content
+				// changes: "off" (targeted invalidation only), "page" or "all" (page and object).
+				'purge_on_content_change' => 'off',
 				'cache_logged_in'         => false,
 				'cache_home'              => true,
 				'cache_singular'          => true,
@@ -134,6 +137,8 @@ final class Simple_Redis_Cache_Early_Config {
 				'purge_on_clear_all'   => false,
 				'purge_on_clear_page'  => false,
 				'purge_on_post_update' => false,
+				// Purge the whole zone whenever public content or the site changes.
+				'purge_on_content_change' => false,
 			),
 			'site'           => array(
 				'host'            => '',

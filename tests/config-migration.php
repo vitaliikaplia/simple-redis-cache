@@ -71,6 +71,21 @@ $assert( false === $migrated['page']['invalidate_on_post_update'], 'Migration di
 $assert( false === $migrated['page']['invalidate_term_archives_on_post_update'], 'Migration did not initialize taxonomy-archive invalidation safely.' );
 $assert( true === $migrated['page']['invalidate_listings_on_post_update'], 'Migration did not turn listing invalidation on for an existing site.' );
 $assert( true === $migrated['page']['purge_on_site_change'], 'Migration did not turn site-change purging on for an existing site.' );
+$assert( 'off' === $migrated['page']['purge_on_content_change'] && false === $migrated['cloudflare']['purge_on_content_change'], 'Migration turned a whole-cache purge on for an existing site.' );
+
+// The whole-cache purge keeps one of its three values; anything else is the safe default.
+foreach ( array( 'page' => 'page', 'all' => 'all', 'off' => 'off', 'everything' => 'off', '' => 'off' ) as $ss_input => $ss_expected ) {
+	$ss_saved = Simple_Redis_Cache_Config::sanitize(
+		array(
+			'page'       => array( 'purge_on_content_change' => $ss_input ),
+			'cloudflare' => array( 'purge_on_content_change' => '1' ),
+		)
+	);
+	$assert( $ss_expected === $ss_saved['page']['purge_on_content_change'], 'The whole-cache purge setting did not save "' . $ss_input . '" as "' . $ss_expected . '".' );
+	$assert( true === $ss_saved['cloudflare']['purge_on_content_change'], 'The Cloudflare content-change setting was not saved.' );
+}
+$ss_saved = Simple_Redis_Cache_Config::sanitize( array( 'page' => array(), 'cloudflare' => array() ) );
+$assert( 'off' === $ss_saved['page']['purge_on_content_change'] && false === $ss_saved['cloudflare']['purge_on_content_change'], 'An unticked form turned a whole-cache purge on.' );
 $assert( Simple_Redis_Cache_Early_Config::install_identity() === $migrated['site']['identity'], 'Migration did not record this installation\'s identity.' );
 $assert( 1 === preg_match( '/^[a-f0-9]{64}$/D', $migrated['site']['secret'] ), 'Migration did not generate a page payload secret.' );
 $assert( ! array_key_exists( 'obsolete', $migrated ), 'Migration retained an unknown root field.' );

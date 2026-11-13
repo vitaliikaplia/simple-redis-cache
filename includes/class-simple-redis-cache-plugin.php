@@ -436,6 +436,11 @@ final class Simple_Redis_Cache_Plugin {
 	 * @return array{failed:string[],object:bool,page:bool}
 	 */
 	private static function invalidate_changed_settings( array $old_config, array $new_config ): array {
+		/*
+		 * Triggers (purge_on_site_change, purge_on_content_change) and response headers
+		 * (shared_max_age) do not change what a stored entry holds, so switching them
+		 * clears nothing.
+		 */
 		$object_keys = array( 'enabled', 'max_ttl', 'cache_wp_admin', 'transient_db_fallback', 'non_persistent_groups' );
 		$page_keys   = array(
 			'enabled',
