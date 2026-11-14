@@ -30,7 +30,7 @@ final class Simple_Redis_Cache_Plugin {
 			return;
 		}
 
-		if ( Simple_Redis_Cache_Config::needs_migration() ) {
+		if ( self::schema_check_needed() && Simple_Redis_Cache_Config::needs_migration() ) {
 			self::maybe_upgrade();
 		} elseif ( is_admin() ) {
 			add_action( 'admin_init', array( self::class, 'admin_maintenance' ), 0 );
@@ -39,6 +39,8 @@ final class Simple_Redis_Cache_Plugin {
 		new Simple_Redis_Cache_GitHub_Updater();
 		Simple_Redis_Cache_Admin::init();
 		Simple_Redis_Cache_Page_Invalidator::init();
+		Simple_Redis_Cache_Cleanup::init();
+		Simple_Redis_Cache_Abilities::init();
 		add_action( 'update_option_' . Simple_Redis_Cache_Config::OPTION, array( self::class, 'settings_updated' ), 10, 3 );
 
 		if ( defined( 'WP_CLI' ) && WP_CLI && class_exists( 'WP_CLI' ) ) {
@@ -132,6 +134,7 @@ final class Simple_Redis_Cache_Plugin {
 
 		self::invalidate_lifecycle_namespaces( $config );
 		self::synchronize( $config, true );
+		Simple_Redis_Cache_Cleanup::ensure_scheduled();
 	}
 
 	/** Disable the early config and remove only drop-ins owned by this plugin. */
@@ -144,6 +147,7 @@ final class Simple_Redis_Cache_Plugin {
 		Simple_Redis_Cache_Config::write_early_config( $config );
 		Simple_Redis_Cache_Dropins::remove_all();
 		Simple_Redis_Cache_Config::remove_early_config();
+		Simple_Redis_Cache_Cleanup::unschedule();
 	}
 
 	/** @param mixed $old_value @param mixed $value */
@@ -333,18 +337,12 @@ final class Simple_Redis_Cache_Plugin {
 		self::$resyncing_copy = false;
 
 		if ( ! self::same_config( Simple_Redis_Cache_Config::get(), $config ) ) {
-			Simple_Redis_Cache_Admin::queue_notice(
-				__( 'Simple Redis Cache detected a copied or moved site but could not save its new cache identity. Both cache layers stay disabled.', 'simple-redis-cache' ),
-				'error'
-			);
+			self::queue_copy_error( __( 'Simple Redis Cache detected a copied or moved site but could not save its new cache identity. Both cache layers stay disabled.', 'simple-redis-cache' ) );
 			return true;
 		}
 
-		if ( ! self::synchronize( $config, true ) ) {
-			Simple_Redis_Cache_Admin::queue_notice(
-				__( 'Simple Redis Cache detected a copied or moved site but could not install its new cache configuration. Both cache layers stay disabled until the files in wp-content can be written.', 'simple-redis-cache' ),
-				'error'
-			);
+		if ( ! self::synchronize( $config, self::copy_error_due() ) ) {
+			self::queue_copy_error( __( 'Simple Redis Cache detected a copied or moved site but could not install its new cache configuration. Both cache layers stay disabled until the files in wp-content can be written.', 'simple-redis-cache' ) );
 			return true;
 		}
 
@@ -364,6 +362,25 @@ final class Simple_Redis_Cache_Plugin {
 		return true;
 	}
 
+	private const COPY_ERROR_TRANSIENT = 'simple_redis_cache_copy_error';
+
+	/**
+	 * A copy that cannot be resynced retries on every administrator request, and
+	 * would report the same failure on every page load. Say it once an hour.
+	 */
+	private static function copy_error_due(): bool {
+		return false === get_transient( self::COPY_ERROR_TRANSIENT );
+	}
+
+	private static function queue_copy_error( string $message ): void {
+		if ( ! self::copy_error_due() ) {
+			return;
+		}
+
+		set_transient( self::COPY_ERROR_TRANSIENT, 1, HOUR_IN_SECONDS );
+		Simple_Redis_Cache_Admin::queue_notice( $message, 'error' );
+	}
+
 	/** Retry a runtime config that was safely deferred after Redis failure. */
 	private static function maybe_recover_runtime(): void {
 		$runtime = Simple_Redis_Cache_Config::runtime();
@@ -381,10 +398,27 @@ final class Simple_Redis_Cache_Plugin {
 	}
 
 	/**
+	 * Whether this request has to ask the database for the stored schema version
+	 * (a direct SELECT, since the settings never go through the object cache).
+	 * The generated early config is written only from stored settings already
+	 * migrated, and records their schema version: while it records the current
+	 * one, front-end requests skip the query. After an update the file still
+	 * records the old version, so the first request of any kind migrates, as
+	 * before. Administrator, cron and WP-CLI requests always ask, so stored
+	 * settings restored or edited behind the file are migrated by the next one.
+	 */
+	private static function schema_check_needed(): bool {
+		if ( is_admin() || wp_doing_cron() || ( defined( 'WP_CLI' ) && WP_CLI ) ) {
+			return true;
+		}
+
+		return Simple_Redis_Cache_Early_Config::file_version() < Simple_Redis_Cache_Early_Config::CONFIG_VERSION;
+	}
+
+	/**
 	 * Perform schema migration and filesystem self-healing once after an update.
-	 * The direct-DB config_version check is cheap on normal requests and all
-	 * writes, Redis invalidation, and drop-in synchronization happen only while
-	 * an older persisted schema is actually present.
+	 * All writes, Redis invalidation, and drop-in synchronization happen only
+	 * while an older persisted schema is actually present.
 	 */
 	private static function maybe_upgrade(): void {
 		if ( self::$upgrade_checked ) {

@@ -20,6 +20,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 $test_content = sys_get_temp_dir() . '/simple-redis-cache-dirty-' . bin2hex( random_bytes( 8 ) );
 if ( ! mkdir( $test_content, 0700 ) && ! is_dir( $test_content ) ) {
 	throw new RuntimeException( 'Could not create the dirty-marker test directory.' );
@@ -106,7 +111,15 @@ final class SRC_Test_Faulty_Redis extends Redis {
 		return parent::get( $key );
 	}
 
+	public function mget( array $keys ): Redis|array|false {
+		$this->fail_if( $this->broken );
+		return parent::mget( $keys );
+	}
+
 	public function del( array|string $key, string ...$other_keys ): Redis|int|false {
+		if ( isset( $this->replies['del'] ) ) {
+			return $this->error_reply( $this->replies['del'] );
+		}
 		$this->fail_if( $this->broken );
 		return parent::del( $key, ...$other_keys );
 	}
@@ -374,8 +387,9 @@ try {
 	/* 10. An error reply proves Redis answered: it fails that request only and never trips the breaker. */
 	$request( $healthy )->set( 'elsewhere', 'in-redis', 'posts' );
 	$replies = array(
+		// A SET whose old copy cannot be deleted either (READONLY refuses DEL too).
 		'set'   => array(
-			"OOM command not allowed when used memory > 'maxmemory'.",
+			"READONLY You can't write against a read only replica.",
 			static fn ( WP_Object_Cache $cache ) => $cache->set( 'large', str_repeat( 'x', 64 ), 'posts' ),
 		),
 		'eval'  => array(
@@ -394,15 +408,56 @@ try {
 		$inject_wrapper_client( $answered, $client );
 		$answered->get( 'warm-up', 'posts' );
 		$client->replies[ $method ] = $reply;
+		if ( 'set' === $method ) {
+			$client->replies['del'] = $reply;
+		}
 		$operation( $answered );
 		$assert( array() !== $answered->errors, 'The ' . $method . ' error reply was not recorded.' );
 		$assert( ! $exists( $breaker ), 'The ' . $method . ' error reply tripped the breaker.' );
 		$assert( $exists( $marker ), 'A change refused with the ' . $method . ' error reply left no dirty marker.' );
-		unset( $client->replies[ $method ] );
+		$client->replies = array();
 		$assert( false === $answered->get( 'elsewhere', 'posts' ), 'The request kept using Redis after the ' . $method . ' error reply.' );
 	}
 	$expire_breaker();
 	$request( $healthy )->get( 'anything', 'posts' );
+
+	/*
+	 * 10b. Redis refuses a SET with OOM but still takes the DEL (#11453): the old
+	 * copy is gone, so nothing stale is left and the namespace stays as it is.
+	 */
+	$oom   = "OOM command not allowed when used memory > 'maxmemory'.";
+	$scrub = array(
+		'set'          => array( array( 'scrubbed' ), static fn ( WP_Object_Cache $cache ) => $cache->set( 'scrubbed', 'new', 'posts' ) ),
+		'replace'      => array( array( 'scrubbed' ), static fn ( WP_Object_Cache $cache ) => $cache->replace( 'scrubbed', 'new', 'posts' ) ),
+		'set_multiple' => array( array( 'scrubbed', 'scrubbed-too' ), static fn ( WP_Object_Cache $cache ) => $cache->set_multiple( array( 'scrubbed' => 'new', 'scrubbed-too' => 'new' ), 'posts' ) ),
+	);
+	foreach ( $scrub as $name => [ $written, $operation ] ) {
+		$reset_markers();
+		$seed = $request( $healthy );
+		$seed->set( 'scrubbed', 'old', 'posts' );
+		$seed->set( 'scrubbed-too', 'old', 'posts' );
+		$generation_before = (int) $probe->get( $object_generation_key );
+
+		$refused = $request( $healthy );
+		$client  = $faulty();
+		$inject_wrapper_client( $refused, $client );
+		$refused->get( 'warm-up', 'posts' );
+		$client->replies['set'] = $oom;
+		$operation( $refused );
+		$client->replies = array();
+		$assert( in_array( $oom, $refused->errors, true ), $name . '(): the OOM reply was not recorded.' );
+		$assert( ! $exists( $breaker ), $name . '(): the OOM reply tripped the breaker.' );
+		$assert( ! $exists( $marker ), $name . '(): a refused write whose old copy was deleted still marked the cache dirty.' );
+		$assert( false === $refused->get( 'elsewhere', 'posts' ), $name . '(): the request kept using Redis after the OOM reply.' );
+
+		$later = $request( $healthy );
+		foreach ( $written as $key ) {
+			$assert( false === $later->get( $key, 'posts' ), $name . '(): a later request read the copy of ' . $key . ' the refused write should have replaced.' );
+		}
+		$assert( $generation_before === (int) $probe->get( $object_generation_key ), $name . '(): the scrubbed write invalidated the whole namespace.' );
+	}
+	$expire_breaker();
+	$reset_markers();
 
 	/* 11. A request connecting during another one's invalidation runs uncached (R1). */
 	$reset_markers();

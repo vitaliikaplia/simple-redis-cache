@@ -20,6 +20,11 @@
 	const strings = config.strings;
 	const maxVisibleErrors = 100;
 	const requestTimeout = Math.max( 1000, Number( config.requestTimeout ) || 30000 );
+	// Renew the warming token this long before it expires: one URL can take several
+	// requests, each with its own timeout.
+	const tokenRenewMargin = 300;
+	let warmToken = '';
+	let warmTokenRenewAt = 0;
 	let controller = null;
 	let running = false;
 	let visibleIssueCount = 0;
@@ -118,6 +123,54 @@
 		return payload.data;
 	}
 
+	/*
+	 * The frontend reports HIT, MISS or BYPASS only to a request carrying a valid,
+	 * short-lived warming token. Its lifetime is counted on this clock from the
+	 * moment it arrives, so the browser and server clocks never have to agree.
+	 */
+	function acceptToken( data ) {
+		if ( ! data || 'string' !== typeof data.warmToken ) {
+			return;
+		}
+
+		// An empty token means the site has no page secret yet; asking again before
+		// every URL would not change that.
+		warmToken = data.warmToken;
+		const lifetime = Number( data.warmTokenTtl ) || 0;
+		warmTokenRenewAt = Date.now() + Math.max( 60, lifetime - tokenRenewMargin ) * 1000;
+	}
+
+	async function renewTokenIfDue( signal ) {
+		if ( Date.now() < warmTokenRenewAt ) {
+			return;
+		}
+
+		const data = new FormData();
+		data.append( 'action', config.tokenAction );
+		data.append( 'nonce', config.nonce );
+
+		const renewController = new AbortController();
+		const abortRenew = () => renewController.abort();
+		const timeoutId = window.setTimeout( abortRenew, requestTimeout );
+		signal.addEventListener( 'abort', abortRenew, { once: true } );
+
+		try {
+			acceptToken( await ajax( data, renewController.signal ) );
+		} catch ( error ) {
+			if ( signal.aborted ) {
+				throw error;
+			}
+			// Keep the current token and try again in a minute; a URL warmed with an
+			// expired one reports a missing page-cache status rather than a false success.
+			warmTokenRenewAt = Date.now() + 60000;
+		} finally {
+			window.clearTimeout( timeoutId );
+			signal.removeEventListener( 'abort', abortRenew );
+		}
+	}
+
+	acceptToken( config );
+
 	// Discovery walks every selected post type and taxonomy, so it is much slower
 	// than a single page request — but it still must not hang the tab forever.
 	const prepareTimeout = Math.max( requestTimeout, Number( config.prepareTimeout ) || 120000 );
@@ -169,6 +222,11 @@
 			signal.addEventListener( 'abort', abortRequest, { once: true } );
 		}
 
+		const headers = { Accept: 'text/html,application/xhtml+xml' };
+		if ( warmToken ) {
+			headers[ 'X-Simple-Redis-Cache-Warm' ] = warmToken;
+		}
+
 		try {
 			const response = await fetch( url, {
 				method,
@@ -176,10 +234,7 @@
 				cache: 'reload',
 				redirect: 'follow',
 				referrerPolicy: 'no-referrer',
-				headers: {
-					Accept: 'text/html,application/xhtml+xml',
-					'X-Simple-Redis-Cache-Warm': '1',
-				},
+				headers,
 				signal: requestController.signal,
 			} );
 
@@ -312,6 +367,7 @@
 
 		try {
 			const prepared = await prepare( controller.signal );
+			acceptToken( prepared );
 			const items = Array.isArray( prepared.items ) ? prepared.items : [];
 			const warnings = Array.isArray( prepared.warnings ) ? prepared.warnings : [];
 			warnings.forEach( addIssue );
@@ -334,6 +390,7 @@
 				progressText.textContent = format( strings.warming, [ item.url ] );
 				let outcome;
 				try {
+					await renewTokenIfDue( controller.signal );
 					outcome = await warmItem( item, controller.signal );
 				} catch ( error ) {
 					if ( error && 'AbortError' === error.name ) {

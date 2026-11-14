@@ -21,6 +21,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 $test_content = sys_get_temp_dir() . '/simple-redis-cache-l1-' . bin2hex( random_bytes( 8 ) );
 if ( ! mkdir( $test_content, 0700 ) && ! is_dir( $test_content ) ) {
 	throw new RuntimeException( 'Could not create the L1 test directory.' );

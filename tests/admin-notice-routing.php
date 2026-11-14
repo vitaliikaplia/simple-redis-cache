@@ -11,6 +11,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 define( 'SIMPLE_REDIS_CACHE_BASENAME', 'simple-redis-cache/simple-redis-cache.php' );
 

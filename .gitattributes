@@ -1,0 +1,6 @@
+# Kept out of the package sites download from GitHub (archive/{sha}.zip honours export-ignore).
+/tests export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/AGENTS.md export-ignore
+/CLAUDE.md export-ignore

@@ -3,6 +3,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 
 $GLOBALS['src_test_actions'] = array();
@@ -371,6 +376,21 @@ Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 7 ), '
 $assert( 0 === $scheduled( 'flush_content_change' ), 'Terms of a draft, a hidden taxonomy or another object type cleared the cache.' );
 Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 7 ), 'category', false, array() );
 $assert( 1 === $scheduled( 'flush_content_change' ), 'New categories of a published post did not clear the cache.' );
+
+// Terms removed with wp_remove_object_terms() follow the same rules (#8514).
+$request( $whole( 'all' ) );
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 2, array( 7 ), 'category' );
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 7 ), 'internal' );
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 7 ), 'profile' );
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 900, array( 7 ), 'category' );
+$assert( 0 === $scheduled( 'flush_content_change' ), 'Removing terms from a draft, a revision, a hidden taxonomy or another object type cleared the cache.' );
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 7 ), 'category' );
+$assert( 1 === $scheduled( 'flush_content_change' ), 'Removing a category from a published post did not clear the cache.' );
+// wp_set_object_terms() removes, then fires set_object_terms: still one purge.
+Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 8 ), 'category', false, array( 7 ) );
+$assert( 1 === $scheduled( 'flush_content_change' ), 'Removing and setting terms in one call scheduled two whole-cache purges.' );
+$shutdown();
+$assert( array( array( 'all', 'purge_on_content_change' ) ) === Simple_Redis_Cache_Purger::$calls && array() === Simple_Redis_Cache_Redis::$bumped, 'Removing and setting terms in one call did not end in exactly one whole-cache purge.' );
 
 // A renamed or deleted public term counts; an internal one does not.
 $request( $whole( 'all' ) );

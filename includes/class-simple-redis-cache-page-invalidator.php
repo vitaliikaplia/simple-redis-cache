@@ -31,6 +31,57 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	private static bool $content_purge_scheduled = false;
 	/** Whether this request already cleared everything for changed content. */
 	private static bool $content_purged = false;
+	/** @var array<int, true> Posts a meta change has already queued; later keys add nothing. */
+	private static array $meta_changed_post_ids = array();
+
+	/**
+	 * Post meta core writes while editing, publishing or housekeeping that never
+	 * changes a cached page. Each can land on a published post outside a post
+	 * update (or before it), so without this list opening the editor, a cron run
+	 * or an admin page load would invalidate — or, in the full-purge mode, clear
+	 * the whole site:
+	 * - _edit_lock: written whenever the editor opens and by the heartbeat;
+	 * - _edit_last: who saved last, written by the save itself;
+	 * - _wp_old_slug, _wp_old_date: redirect bookkeeping core writes inside
+	 *   post_updated, which already invalidates the post;
+	 * - _encloseme, _pingme, _trackbackme: publish-time flags that cron deletes
+	 *   in a later request once pings and enclosures are processed;
+	 * - enclosure: added and removed by that cron run; only RSS/Atom feeds print
+	 *   it, and feeds are never cached;
+	 * - _wp_desired_post_slug: the slug a trashed post gave up;
+	 * - _wp_attached_file: an attachment's file path (attachments are not pages);
+	 * - _wp_suggested_privacy_policy_content: plugins' suggested policy text, which
+	 *   core re-syncs onto the published privacy page on admin_init and shows
+	 *   only in the editor's policy guide;
+	 * - _customize_draft_post_name: Customizer stub-page bookkeeping, removed when
+	 *   the changeset publishes the page, which invalidates it by itself.
+	 */
+	private const INTERNAL_META_KEYS = array(
+		'_edit_lock',
+		'_edit_last',
+		'_wp_old_slug',
+		'_wp_old_date',
+		'_encloseme',
+		'_pingme',
+		'_trackbackme',
+		'enclosure',
+		'_wp_desired_post_slug',
+		'_wp_attached_file',
+		'_wp_suggested_privacy_policy_content',
+		'_customize_draft_post_name',
+	);
+
+	/**
+	 * Prefixes of the same kind:
+	 * - _wp_trash_meta_: status, time and comment status saved around trashing;
+	 * - _wp_attachment_: attachment metadata, alt text, backup sizes, context;
+	 * - _oembed_: the oEmbed response cache, which rendering refills lazily —
+	 *   also when the block editor loads a post over REST — with the same embed.
+	 */
+	/** Classic-editor admin-ajax actions that save post meta of a post being edited. */
+	private const META_AJAX_ACTIONS = array( 'set-post-thumbnail', 'add-meta', 'delete-meta' );
+
+	private const INTERNAL_META_PREFIXES = array( '_wp_trash_meta_', '_wp_attachment_', '_oembed_' );
 
 	/**
 	 * Non-public post types the Site Editor saves: navigation menus, templates and
@@ -66,6 +117,11 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	public static function init(): void {
 		add_action( 'post_updated', array( self::class, 'post_updated' ), 10, 3 );
 		add_action( 'set_object_terms', array( self::class, 'set_object_terms' ), 10, 6 );
+		// wp_remove_object_terms() fires only this, never set_object_terms.
+		add_action( 'deleted_term_relationships', array( self::class, 'term_relationships_deleted' ), 10, 3 );
+		foreach ( array( 'added_post_meta', 'updated_post_meta', 'deleted_post_meta' ) as $hook ) {
+			add_action( $hook, array( self::class, 'post_meta_changed' ), 10, 3 );
+		}
 		// Fires for scheduled publishing too, which changes status without post_updated.
 		add_action( 'transition_post_status', array( self::class, 'transition_post_status' ), 10, 3 );
 		add_action( 'before_delete_post', array( self::class, 'before_delete_post' ), 10, 2 );
@@ -79,6 +135,8 @@ final class Simple_Redis_Cache_Page_Invalidator {
 			add_action( $hook, array( self::class, 'site_changed' ) );
 		}
 		add_action( 'upgrader_process_complete', array( self::class, 'upgraded' ), 10, 2 );
+		// "Replace current with uploaded" reports itself as an install, not an update.
+		add_action( 'upgrader_overwrote_package', array( self::class, 'site_changed' ) );
 		add_action( 'updated_option', array( self::class, 'option_updated' ) );
 		add_action( 'acf/save_post', array( self::class, 'acf_saved' ) );
 	}
@@ -163,33 +221,95 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		unset( $terms, $append );
 		self::terms_of_public_post_changed( $object_id, $taxonomy );
 
+		/*
+		 * No status check here: inside wp_insert_post() the terms are written after
+		 * the new status, so unpublishing a post and moving it to another category
+		 * in one save arrives as a draft whose old category still lists it.
+		 */
+		self::queue_post_terms( $object_id, array_merge( $old_tt_ids, $tt_ids ), $taxonomy, false );
+	}
+
+	/**
+	 * Terms removed with wp_remove_object_terms(), which fires this instead of
+	 * set_object_terms. wp_set_object_terms() removes terms the same way before
+	 * its own set_object_terms, so both handlers fill the same keyed queue and the
+	 * request still ends in one invalidation (or one full purge).
+	 *
+	 * @param int    $object_id
+	 * @param int[]  $tt_ids    Term taxonomy IDs that were removed.
+	 * @param string $taxonomy
+	 */
+	public static function term_relationships_deleted( mixed $object_id, mixed $tt_ids, mixed $taxonomy ): void {
+		$object_id = (int) $object_id;
+		$taxonomy  = (string) $taxonomy;
+		self::terms_of_public_post_changed( $object_id, $taxonomy );
+
+		/*
+		 * Unlike set_object_terms, nothing here follows a status change: a
+		 * published post leaves an archive, while a draft or a trashed post being
+		 * emptied was in no public archive to begin with. Without this check,
+		 * emptying the trash would invalidate and purge every term archive at the
+		 * edge for nothing.
+		 */
+		self::queue_post_terms( $object_id, array_map( 'intval', (array) $tt_ids ), $taxonomy, true );
+	}
+
+	/**
+	 * Post meta changed. Only a published post of a front-end type counts, only
+	 * for keys that are not core bookkeeping, and by default only where content
+	 * is edited: WP-CLI, and admin screens — plus the classic editor's
+	 * set-post-thumbnail, add-meta and delete-meta admin-ajax actions — by a user
+	 * who can edit the post. Front-end requests, other admin-ajax actions, REST,
+	 * XML-RPC and cron — where view counters and synchronisation jobs write — do
+	 * not invalidate unless the `simple_redis_cache_post_meta_invalidates` filter
+	 * says so:
+	 *
+	 *     apply_filters( 'simple_redis_cache_post_meta_invalidates', bool $default, int $post_id, string $meta_key, string $context )
+	 *
+	 * $context is one of "cli", "cron", "rest", "xmlrpc", "admin", "ajax" or
+	 * "frontend". The filter is not asked again for a post this request already
+	 * queued. A change counts as a post update: the post and its translations,
+	 * their term archives and the listing token, with their Cloudflare addresses,
+	 * or the full purge when the settings ask for one — collected for shutdown
+	 * together with any post update in the same request.
+	 *
+	 * @param int|int[] $meta_ids
+	 * @param int       $object_id
+	 * @param string    $meta_key
+	 */
+	public static function post_meta_changed( mixed $meta_ids, mixed $object_id, mixed $meta_key ): void {
+		unset( $meta_ids );
+		$post_id  = is_numeric( $object_id ) ? (int) $object_id : 0;
+		$meta_key = is_string( $meta_key ) ? $meta_key : '';
+		// delete_post_meta_by_key() reports object ID 0: which posts lost the key is unknown.
+		if ( $post_id < 1 || isset( self::$meta_changed_post_ids[ $post_id ] ) || self::is_internal_meta_key( $meta_key ) ) {
+			return;
+		}
+
 		$config = Simple_Redis_Cache_Config::get();
 		if (
-			! self::is_enabled( $config ) ||
-			empty( $config['page']['invalidate_term_archives_on_post_update'] ) ||
-			self::is_ignored_post( $object_id )
+			Simple_Redis_Cache_Config::is_foreign( $config ) ||
+			( ! self::is_enabled( $config ) && ! self::purges_everything_on_change( $config ) ) ||
+			self::is_ignored_post( $post_id )
 		) {
 			return;
 		}
 
-		$post_type = get_post_type( $object_id );
-		if ( ! is_string( $post_type ) || ! self::is_frontend_post_type( $post_type ) || ! self::is_viewable_taxonomy( $taxonomy ) ) {
+		$post      = get_post( $post_id );
+		$post_type = is_object( $post ) ? (string) ( $post->post_type ?? '' ) : '';
+		if ( 'attachment' === $post_type || ! self::is_public_post( $post ) || ! self::is_frontend_post_type( $post_type ) ) {
 			return;
 		}
 
-		/*
-		 * set_object_terms fires for any object type, and its object IDs are only
-		 * unique per taxonomy. A term attached to a user or comment whose ID happens
-		 * to match a post ID would otherwise invalidate that unrelated post and every
-		 * term it carries. Require the post type to actually belong to this taxonomy.
-		 */
-		if ( ! self::taxonomy_applies_to_post_type( $taxonomy, $post_type ) ) {
+		$context = self::request_context();
+		$default = self::meta_change_invalidates_by_default( $context, $post_id );
+		if ( ! (bool) apply_filters( 'simple_redis_cache_post_meta_invalidates', $default, $post_id, $meta_key, $context ) ) {
 			return;
 		}
 
-		self::$pending_post_ids[ $object_id ] = true;
-		self::collect_term_taxonomy_ids( array_merge( $old_tt_ids, $tt_ids ), $taxonomy );
-		self::schedule_flush();
+		self::$meta_changed_post_ids[ $post_id ] = true;
+		self::content_changed();
+		self::queue_post( $post_id, $post_type );
 	}
 
 	/**
@@ -423,6 +543,114 @@ final class Simple_Redis_Cache_Page_Invalidator {
 	}
 
 	/**
+	 * Clear one post's cached pages now, on an explicit request — the
+	 * simple-redis-cache/flush-post ability — rather than at shutdown after an
+	 * edit. The post and its translations always; with $related also their term
+	 * archives and the listing pages, as far as the settings tie pages to those.
+	 * Cloudflare gets the same addresses when it purges on post updates, after
+	 * Redis, so the edge cannot refetch the old page.
+	 *
+	 * @return array<string, mixed>|WP_Error
+	 */
+	public static function purge_post_now( int $post_id, bool $related = false ): array|WP_Error {
+		$post = $post_id > 0 && ! self::is_ignored_post( $post_id ) ? get_post( $post_id ) : null;
+		if ( ! is_object( $post ) ) {
+			return new WP_Error( 'src_post_not_found', __( 'No post, page or other entry has this ID.', 'simple-redis-cache' ) );
+		}
+
+		$post_type = (string) ( $post->post_type ?? '' );
+		if ( 'attachment' === $post_type || ! self::is_frontend_post_type( $post_type ) ) {
+			return new WP_Error( 'src_post_not_public', __( 'Entries of this type have no public page of their own, so none of it is cached.', 'simple-redis-cache' ) );
+		}
+		/*
+		 * A draft has no cached page, and the edit_post capability that lets an author
+		 * call this covers drafts: clearing listings and edge URLs for one would let a
+		 * contributor bust site-wide caches at will.
+		 */
+		if ( ! self::is_public_post( $post ) ) {
+			return new WP_Error( 'src_post_not_published', __( 'This entry is not published, so none of its pages is cached.', 'simple-redis-cache' ) );
+		}
+
+		$config = Simple_Redis_Cache_Config::get();
+		if ( Simple_Redis_Cache_Config::is_foreign( $config ) ) {
+			return new WP_Error( 'src_copied_site', __( 'These cache settings were copied from another site. Open any wp-admin page as an administrator so Simple Redis Cache can give this site its own cache namespace, then try again.', 'simple-redis-cache' ) );
+		}
+
+		$page_cache = ! empty( $config['page']['enabled'] );
+		$edge       = Simple_Redis_Cache_Cloudflare::should_purge_for( 'purge_on_post_update', $config );
+		if ( ! $page_cache && ! $edge ) {
+			return new WP_Error( 'src_nothing_to_clear', __( 'Neither the HTML page cache nor Cloudflare purging on post updates is enabled, so no page of this post is cached here.', 'simple-redis-cache' ) );
+		}
+		if ( $page_cache && empty( $config['page']['invalidate_on_post_update'] ) ) {
+			return new WP_Error( 'src_post_invalidation_off', __( 'Cached pages are not tied to their posts on this site ("Clear a page\'s cache when it is updated" is off on the HTML Page Cache tab), so one post cannot be cleared on its own. Clear the whole page cache instead.', 'simple-redis-cache' ) );
+		}
+
+		$post_ids = array();
+		foreach ( self::translation_ids( $post_id, $post_type ) as $translation_id ) {
+			$translation_type = get_post_type( $translation_id );
+			if ( is_string( $translation_type ) && self::is_frontend_post_type( $translation_type ) ) {
+				$post_ids[] = (int) $translation_id;
+			}
+		}
+
+		$resources = array( 'post' => $post_ids );
+		if ( $related ) {
+			if ( ! empty( $config['page']['invalidate_term_archives_on_post_update'] ) ) {
+				// Borrow the collector without disturbing work queued by this request.
+				$queued                          = self::$pending_term_taxonomy_ids;
+				self::$pending_term_taxonomy_ids = array();
+				foreach ( $post_ids as $id ) {
+					self::collect_current_terms( $id, (string) get_post_type( $id ) );
+				}
+				$resources['term']               = array_keys( self::$pending_term_taxonomy_ids );
+				self::$pending_term_taxonomy_ids = $queued;
+			}
+			if ( ! empty( $config['page']['invalidate_listings_on_post_update'] ) ) {
+				$resources['list'] = array( Simple_Redis_Cache_Page_Capture::LISTING_RESOURCE_ID );
+			}
+		}
+
+		$result = array(
+			'post_ids'      => $post_ids,
+			'term_archives' => count( $resources['term'] ?? array() ),
+			'listing_pages' => ! empty( $resources['list'] ),
+			'page_cache'    => 'not enabled',
+		);
+
+		if ( $page_cache ) {
+			$redis = new Simple_Redis_Cache_Redis( $config );
+			if ( false === $redis->bump_page_content_versions( $resources ) ) {
+				return new WP_Error(
+					'src_post_purge_failed',
+					sprintf(
+						/* translators: %s: Redis connection or command error. */
+						__( 'Could not clear the cached pages of this post: %s', 'simple-redis-cache' ),
+						$redis->display_error() ?: __( 'Redis is unavailable.', 'simple-redis-cache' )
+					)
+				);
+			}
+			$result['page_cache'] = 'cleared';
+		}
+
+		$result['cloudflare'] = 'not purged (Cloudflare purging on post updates is off)';
+		if ( $edge ) {
+			$urls   = array_values( array_unique( self::cloudflare_urls( $resources, array(), array( $post_type ) ) ) );
+			$purged = Simple_Redis_Cache_Cloudflare::purge_urls( $urls, $config );
+			if ( is_wp_error( $purged ) ) {
+				$result['cloudflare'] = 'purge failed: ' . implode( ' ', $purged->get_error_messages() );
+			} else {
+				$result['cloudflare']      = 'purged';
+				$result['cloudflare_urls'] = $urls;
+				if ( ! empty( $purged['skipped'] ) ) {
+					$result['cloudflare_urls_left'] = (int) $purged['skipped'];
+				}
+			}
+		}
+
+		return $result;
+	}
+
+	/**
 	 * Whether a content change goes to flush_content_change(): a whole-cache scope, or
 	 * a Cloudflare zone purge that has no page cache to wait for.
 	 *
@@ -451,6 +679,114 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		if ( self::is_public_post( $post ) && self::is_frontend_post_type( $type ) && self::taxonomy_applies_to_post_type( $taxonomy, $type ) ) {
 			self::content_changed();
 		}
+	}
+
+	/**
+	 * Queue a post whose terms changed and the archives of those terms (with
+	 * their parents; translations and current terms follow at shutdown).
+	 *
+	 * @param int[] $tt_ids
+	 */
+	private static function queue_post_terms( int $object_id, array $tt_ids, string $taxonomy, bool $published_only ): void {
+		$config = Simple_Redis_Cache_Config::get();
+		if (
+			! self::is_enabled( $config ) ||
+			empty( $config['page']['invalidate_term_archives_on_post_update'] ) ||
+			self::is_ignored_post( $object_id )
+		) {
+			return;
+		}
+
+		$post_type = get_post_type( $object_id );
+		if ( ! is_string( $post_type ) || ! self::is_frontend_post_type( $post_type ) || ! self::is_viewable_taxonomy( $taxonomy ) ) {
+			return;
+		}
+
+		/*
+		 * Term relationship hooks fire for any object type, and their object IDs are
+		 * only unique per taxonomy. A term attached to a user or comment whose ID
+		 * happens to match a post ID would otherwise invalidate that unrelated post
+		 * and every term it carries. Require the post type to actually belong to
+		 * this taxonomy.
+		 */
+		if ( ! self::taxonomy_applies_to_post_type( $taxonomy, $post_type ) ) {
+			return;
+		}
+		if ( $published_only && ! self::is_public_post( get_post( $object_id ) ) ) {
+			return;
+		}
+
+		self::$pending_post_ids[ $object_id ] = true;
+		self::collect_term_taxonomy_ids( $tt_ids, $taxonomy );
+		self::schedule_flush();
+	}
+
+	private static function is_internal_meta_key( string $meta_key ): bool {
+		if ( '' === $meta_key || in_array( $meta_key, self::INTERNAL_META_KEYS, true ) ) {
+			return true;
+		}
+		foreach ( self::INTERNAL_META_PREFIXES as $prefix ) {
+			if ( str_starts_with( $meta_key, $prefix ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/** Where the current request comes from, as the post meta filter names it. */
+	private static function request_context(): string {
+		// Before WP-CLI: `wp cron event run`, the usual production cron runner, is both.
+		if ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) {
+			return 'cron';
+		}
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			return 'cli';
+		}
+		if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+			return 'rest';
+		}
+		if ( defined( 'XMLRPC_REQUEST' ) && XMLRPC_REQUEST ) {
+			return 'xmlrpc';
+		}
+		if ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) {
+			return 'ajax';
+		}
+		if ( function_exists( 'is_admin' ) && is_admin() ) {
+			return 'admin';
+		}
+
+		return 'frontend';
+	}
+
+	/**
+	 * WP-CLI is someone at a terminal changing content; an admin screen is
+	 * someone allowed to edit the post doing so, and so are the classic editor's
+	 * own admin-ajax actions that save meta before the post is updated.
+	 *
+	 * Everything else stays out by default because it also runs per visit or on a
+	 * timer: view counters on the front end, over admin-ajax or over REST (core
+	 * REST and XML-RPC edits of a post fire post_updated anyway), and scheduled
+	 * jobs that sync statistics or stock. In the 0.9.0 full-purge mode each of
+	 * those would clear the whole site. The filter opts them in.
+	 */
+	private static function meta_change_invalidates_by_default( string $context, int $post_id ): bool {
+		// The current user is pluggable: unknown before plugins have loaded.
+		$can_edit = static fn (): bool => function_exists( 'wp_get_current_user' ) && current_user_can( 'edit_post', $post_id );
+
+		return match ( $context ) {
+			'cli'   => true,
+			'admin' => $can_edit(),
+			'ajax'  => in_array( self::ajax_action(), self::META_AJAX_ACTIONS, true ) && $can_edit(),
+			default => false,
+		};
+	}
+
+	/** The admin-ajax action of this request, as WordPress dispatches it. */
+	private static function ajax_action(): string {
+		$action = $_REQUEST['action'] ?? ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- only compared with a fixed list; the action checks its own nonce.
+
+		return is_string( $action ) ? $action : '';
 	}
 
 	/** @param array<string, mixed> $config */
@@ -577,6 +913,46 @@ final class Simple_Redis_Cache_Page_Invalidator {
 			return;
 		}
 
+		$urls = self::cloudflare_urls( $resources, $captured_urls, $post_types, $term_urls );
+		if ( empty( $urls ) ) {
+			return;
+		}
+
+		$purged = Simple_Redis_Cache_Cloudflare::purge_urls( $urls, $config );
+		if ( ! is_wp_error( $purged ) ) {
+			if ( ! empty( $purged['skipped'] ) ) {
+				Simple_Redis_Cache_Admin::queue_notice(
+					sprintf(
+						/* translators: %d: number of URLs left on the CDN. */
+						__( 'This update touched more URLs than one Cloudflare purge can carry, so %d of them were left on the CDN. Use Clear Cloudflare cache to clear the whole zone.', 'simple-redis-cache' ),
+						(int) $purged['skipped']
+					),
+					'warning'
+				);
+			}
+			return;
+		}
+
+		Simple_Redis_Cache_Admin::queue_notice(
+			sprintf(
+				/* translators: %s: Cloudflare API error. */
+				__( 'Could not clear the Cloudflare cache for the updated content: %s', 'simple-redis-cache' ),
+				implode( ' ', $purged->get_error_messages() )
+			),
+			'warning'
+		);
+	}
+
+	/**
+	 * The edge addresses of invalidated resources.
+	 *
+	 * @param array{post?:int[],term?:int[],list?:int[]} $resources
+	 * @param string[]                                   $captured_urls Addresses seen before the update.
+	 * @param string[]                                   $post_types    Types of the changed posts.
+	 * @param string[]                                   $term_urls     Term addresses seen before a rename or deletion.
+	 * @return string[]
+	 */
+	private static function cloudflare_urls( array $resources, array $captured_urls, array $post_types, array $term_urls = array() ): array {
 		/*
 		 * The pre-update addresses belong to posts, so they only apply when singular
 		 * invalidation is the thing that ran. With only taxonomy invalidation enabled
@@ -605,35 +981,8 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		if ( ! empty( $resources['list'] ) ) {
 			$urls = array_merge( $urls, self::listing_urls( $post_types ) );
 		}
-		$urls = array_merge( $urls, $term_urls );
 
-		if ( empty( $urls ) ) {
-			return;
-		}
-
-		$purged = Simple_Redis_Cache_Cloudflare::purge_urls( $urls, $config );
-		if ( ! is_wp_error( $purged ) ) {
-			if ( ! empty( $purged['skipped'] ) ) {
-				Simple_Redis_Cache_Admin::queue_notice(
-					sprintf(
-						/* translators: %d: number of URLs left on the CDN. */
-						__( 'This update touched more URLs than one Cloudflare purge can carry, so %d of them were left on the CDN. Use Clear Cloudflare cache to clear the whole zone.', 'simple-redis-cache' ),
-						(int) $purged['skipped']
-					),
-					'warning'
-				);
-			}
-			return;
-		}
-
-		Simple_Redis_Cache_Admin::queue_notice(
-			sprintf(
-				/* translators: %s: Cloudflare API error. */
-				__( 'Could not clear the Cloudflare cache for the updated content: %s', 'simple-redis-cache' ),
-				implode( ' ', $purged->get_error_messages() )
-			),
-			'warning'
-		);
+		return array_merge( $urls, $term_urls );
 	}
 
 	/**
@@ -929,6 +1278,7 @@ final class Simple_Redis_Cache_Page_Invalidator {
 		self::$pending_listing           = false;
 		self::$pending_post_types        = array();
 		self::$pending_cloudflare_term_urls = array();
+		self::$meta_changed_post_ids        = array();
 	}
 
 	/**

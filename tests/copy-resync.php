@@ -8,6 +8,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 $test_content = sys_get_temp_dir() . '/src-copy-' . bin2hex( random_bytes( 6 ) );
 mkdir( $test_content );
 // Even an aborted run must not leave a read-only directory behind.
@@ -79,6 +84,17 @@ function update_option( string $name, mixed $value, mixed $autoload = null ): bo
 	$old                   = $GLOBALS['src_option'];
 	$GLOBALS['src_option'] = $value;
 	Simple_Redis_Cache_Plugin::settings_updated( $old, $value, $name );
+	return true;
+}
+
+$GLOBALS['src_transients'] = array();
+
+function get_transient( string $name ): mixed {
+	return $GLOBALS['src_transients'][ $name ] ?? false;
+}
+
+function set_transient( string $name, mixed $value, int $expiration = 0 ): bool {
+	$GLOBALS['src_transients'][ $name ] = $value;
 	return true;
 }
 
@@ -214,6 +230,7 @@ $reset_world     = static function () use ( $original ): void {
 	Simple_Redis_Cache_Redis::$prefixes  = array();
 	Simple_Redis_Cache_Dropins::$synced  = 0;
 	Simple_Redis_Cache_Dropins::$fail    = false;
+	$GLOBALS['src_transients']           = array();
 	( new ReflectionProperty( Simple_Redis_Cache_Plugin::class, 'last_config_hash' ) )->setValue( null, null );
 	( new ReflectionProperty( Simple_Redis_Cache_Plugin::class, 'settings_attempts' ) )->setValue( null, array() );
 };
@@ -232,13 +249,27 @@ $assert( ! in_array( 'warning', array_column( Simple_Redis_Cache_Admin::$notices
 // A2. wp-content cannot be written at all, so the copied runtime stays in place.
 $reset_world();
 chmod( $test_content, 0555 );
-for ( $request = 1; $request <= 3; $request++ ) {
+// Every administrator request is its own process: nothing is memoized between them.
+$next_request = static function (): void {
+	( new ReflectionProperty( Simple_Redis_Cache_Plugin::class, 'last_config_hash' ) )->setValue( null, null );
 	Simple_Redis_Cache_Plugin::admin_maintenance();
-}
+};
+$next_request();
+$first_request_notices = count( Simple_Redis_Cache_Admin::$notices );
+$next_request();
+$next_request();
 chmod( $test_content, 0755 );
 $assert( ! empty( Simple_Redis_Cache_Config::runtime( true )['site']['copy_detected'] ), 'The read-only fixture did not keep the copied runtime in place.' );
 $assert( ! in_array( $original_prefix, Simple_Redis_Cache_Redis::$prefixes, true ), 'A copy with an unwritable wp-content invalidated the original site\'s namespace on every admin request.' );
 $assert( 'error' === ( Simple_Redis_Cache_Admin::$notices[0]['type'] ?? '' ), 'A copy that could not write its config was not reported as an error.' );
+$assert( ! in_array( 'warning', array_column( Simple_Redis_Cache_Admin::$notices, 'type' ), true ), 'A copy that could not write its config claimed it got its own namespace.' );
+$assert( $first_request_notices > 0 && count( Simple_Redis_Cache_Admin::$notices ) === $first_request_notices, 'A copy that keeps failing to resync repeated its errors on every administrator request (' . count( Simple_Redis_Cache_Admin::$notices ) . ' notices after 3 requests, ' . $first_request_notices . ' after the first).' );
+// An hour later the transient is gone, so a copy that still fails says so again.
+chmod( $test_content, 0555 );
+$GLOBALS['src_transients'] = array();
+$next_request();
+chmod( $test_content, 0755 );
+$assert( count( Simple_Redis_Cache_Admin::$notices ) === 2 * $first_request_notices, 'A copy that still failed after the quiet period was not reported again.' );
 
 // Recovery on its own must refuse a copied runtime, whatever ran before it.
 $reset_world();

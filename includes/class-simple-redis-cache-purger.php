@@ -117,6 +117,11 @@ final class Simple_Redis_Cache_Purger {
 			}
 		}
 
+		// The superseded generation stays in Redis until its TTL unless it is swept.
+		if ( isset( $result['object_generation'] ) || isset( $result['page_generation'] ) ) {
+			Simple_Redis_Cache_Cleanup::schedule_soon();
+		}
+
 		return $errors->has_errors() ? $errors : $result;
 	}
 

@@ -3,6 +3,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 
 $GLOBALS['src_test_config'] = array();
@@ -118,6 +123,15 @@ final class Simple_Redis_Cache_Test_DB {
 
 $GLOBALS['wpdb'] = new Simple_Redis_Cache_Test_DB();
 
+/** Records when a purge asks for the old generation to be swept. */
+final class Simple_Redis_Cache_Cleanup {
+	public static int $scheduled = 0;
+
+	public static function schedule_soon(): void {
+		++self::$scheduled;
+	}
+}
+
 require_once dirname( __DIR__ ) . '/includes/class-simple-redis-cache-purger.php';
 
 $assert = static function ( bool $condition, string $message ): void {
@@ -143,7 +157,14 @@ $assert( 1 === $purges( array( 'purge_on_content_change' => true ), 'all', 'purg
 $assert( 1 === $purges( array( 'purge_on_content_change' => true, 'purge_on_clear_all' => true ), 'all', 'purge_on_content_change' ), 'Two matching options purged the zone twice.' );
 $assert( 0 === $purges( array( 'purge_on_content_change' => true ), 'object', 'purge_on_content_change' ), 'An object-cache purge touched the zone.' );
 
+// A purge leaves a whole generation behind: the sweep is asked to run soon.
+Simple_Redis_Cache_Cleanup::$scheduled = 0;
+$purges( array(), 'page' );
+$assert( 1 === Simple_Redis_Cache_Cleanup::$scheduled, 'A page purge did not schedule the sweep of the old generation.' );
+
 Simple_Redis_Cache_Redis::$fail_page = true;
+Simple_Redis_Cache_Cleanup::$scheduled = 0;
 $assert( 0 === $purges( array( 'purge_on_content_change' => true ), 'page', 'purge_on_content_change' ), 'The zone was purged while Redis still served the old pages.' );
+$assert( 0 === Simple_Redis_Cache_Cleanup::$scheduled, 'A purge that bumped no generation scheduled a sweep.' );
 
 echo "Purger Cloudflare trigger test passed.\n";

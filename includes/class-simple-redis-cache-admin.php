@@ -17,6 +17,7 @@ final class Simple_Redis_Cache_Admin {
 	private const CLOUDFLARE_PURGE_ACTION = 'simple_redis_cache_purge_cloudflare';
 	private const WARM_PREPARE_ACTION = 'simple_redis_cache_prepare_warm';
 	private const WARM_URL_ACTION     = 'simple_redis_cache_warm_url';
+	private const WARM_TOKEN_ACTION   = 'simple_redis_cache_warm_token';
 	private const WARM_NONCE          = 'simple_redis_cache_warm';
 	private const DEFAULT_TAB  = 'redis';
 	private const SETTINGS_TAB = '_settings_tab';
@@ -39,6 +40,7 @@ final class Simple_Redis_Cache_Admin {
 		add_action( 'admin_post_' . self::CLOUDFLARE_PURGE_ACTION, array( self::class, 'handle_cloudflare_purge' ) );
 		add_action( 'wp_ajax_' . self::WARM_PREPARE_ACTION, array( self::class, 'ajax_prepare_warm' ) );
 		add_action( 'wp_ajax_' . self::WARM_URL_ACTION, array( self::class, 'ajax_warm_url' ) );
+		add_action( 'wp_ajax_' . self::WARM_TOKEN_ACTION, array( self::class, 'ajax_warm_token' ) );
 		add_action( 'admin_bar_menu', array( self::class, 'admin_bar' ), 100 );
 		add_filter( 'plugin_action_links_' . SIMPLE_REDIS_CACHE_BASENAME, array( self::class, 'plugin_action_links' ) );
 	}
@@ -78,10 +80,11 @@ final class Simple_Redis_Cache_Admin {
 		wp_localize_script(
 			'simple-redis-cache-warm',
 			'SimpleRedisCacheWarm',
-			array(
+			self::warm_token_data() + array(
 				'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
 				'prepareAction' => self::WARM_PREPARE_ACTION,
 				'proxyAction'   => self::WARM_URL_ACTION,
+				'tokenAction'   => self::WARM_TOKEN_ACTION,
 				'nonce'         => wp_create_nonce( self::WARM_NONCE ),
 				'retryDelay'    => 250,
 				'requestTimeout' => 30000,
@@ -197,7 +200,7 @@ final class Simple_Redis_Cache_Admin {
 		self::add_field( 'page', 'cache_search', __( 'Cache search results', 'simple-redis-cache' ), 'checkbox', array(), __( 'Kept for at most 10 minutes, in Redis and at a CDN.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'cache_404', __( 'Cache 404 responses', 'simple-redis-cache' ), 'checkbox', array(), __( 'Kept for at most 10 minutes, in Redis and at a CDN.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'cache_query_strings', __( 'Cache query strings', 'simple-redis-cache' ), 'checkbox', array(), __( 'Non-ignored query parameters normally bypass page cache unless this is enabled; supported search parameters are a limited exception. Built-in unsafe parameters always bypass.', 'simple-redis-cache' ) );
-		self::add_field( 'page', 'ignored_query_parameters', __( 'Ignored query parameters', 'simple-redis-cache' ), 'textarea', array(), __( 'One exact name or wildcard pattern per line; * and ? are supported. Matching non-sensitive parameters are removed from the cache key; built-in unsafe names cannot be ignored.', 'simple-redis-cache' ) );
+		self::add_field( 'page', 'ignored_query_parameters', __( 'Ignored query parameters', 'simple-redis-cache' ), 'textarea', array(), __( 'One exact name or wildcard pattern per line; * and ? are supported. Matching non-sensitive parameters are removed from the cache key; built-in unsafe names cannot be ignored. A pattern made only of * or ? is rejected, because it would make different pages share one cache entry.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'excluded_paths', __( 'Excluded paths', 'simple-redis-cache' ), 'textarea', array(), __( 'One path pattern per line; * and ? are supported.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'excluded_cookies', __( 'Excluded request cookies', 'simple-redis-cache' ), 'textarea', array(), __( 'Matching cookies normally bypass page cache. Vary-cookie entries and the default WordPress auth prefixes when logged-in caching is enabled use isolated variants instead. Use one exact name, wildcard pattern, or conventional prefix ending in _ per line. Add every cookie that changes page content, such as a theme\'s maintenance-mode access cookie, and clear the page cache when such a mode is switched on.', 'simple-redis-cache' ) );
 		self::add_field( 'page', 'excluded_user_agents', __( 'Excluded user agents', 'simple-redis-cache' ), 'textarea', array(), __( 'One case-insensitive substring or wildcard pattern per line.', 'simple-redis-cache' ) );
@@ -482,11 +485,32 @@ final class Simple_Redis_Cache_Admin {
 			);
 		}
 
+		// A fresh warming token per run: the one printed with the page may have expired.
 		wp_send_json_success(
-			array(
+			self::warm_token_data() + array(
 				'items'    => $items,
 				'warnings' => $result['warnings'],
 			)
+		);
+	}
+
+	/** Renew the warming token during a run that outlasts its lifetime. */
+	public static function ajax_warm_token(): void {
+		self::authorize_ajax_warm();
+		wp_send_json_success( self::warm_token_data() );
+	}
+
+	/**
+	 * The token the browser sends in X-Simple-Redis-Cache-Warm, so the frontend
+	 * reports HIT, MISS or BYPASS to it, and its lifetime in seconds. The browser
+	 * times renewal by its own clock and never compares it with the server's.
+	 *
+	 * @return array{warmToken: string, warmTokenTtl: int}
+	 */
+	private static function warm_token_data(): array {
+		return array(
+			'warmToken'    => Simple_Redis_Cache_Warmer::warm_token(),
+			'warmTokenTtl' => Simple_Redis_Cache_Early_Config::WARM_TOKEN_LIFETIME,
 		);
 	}
 
@@ -656,6 +680,7 @@ final class Simple_Redis_Cache_Admin {
 			<tr><th scope="row"><?php esc_html_e( 'Page drop-in', 'simple-redis-cache' ); ?></th><td><?php echo esc_html( $status_text[ $page_state ] ); ?><br><code><?php echo esc_html( $page_path ); ?></code><?php echo '' !== $page_mode ? ' · ' . esc_html( sprintf( /* translators: %s: octal file mode. */ __( 'mode %s', 'simple-redis-cache' ), $page_mode ) ) : ''; ?><?php if ( self::file_is_group_or_other_writable( $page_path ) ) : ?><br><span class="notice-warning"><?php esc_html_e( 'The drop-in is writable by its group or by other system users.', 'simple-redis-cache' ); ?></span><?php endif; ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'WP_CACHE', 'simple-redis-cache' ); ?></th><td><?php echo defined( 'WP_CACHE' ) && WP_CACHE ? esc_html__( 'true', 'simple-redis-cache' ) : esc_html__( 'not true', 'simple-redis-cache' ); ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'Outage state', 'simple-redis-cache' ); ?></th><td><?php self::render_outage_state(); ?></td></tr>
+			<tr><th scope="row"><?php esc_html_e( 'Old cache generations', 'simple-redis-cache' ); ?></th><td><?php self::render_cleanup_state( $redis_ok ? $redis : null, $config ); ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'Generated early config', 'simple-redis-cache' ); ?></th><td><code><?php echo esc_html( Simple_Redis_Cache_Early_Config::path() ); ?></code><br><?php echo esc_html( (string) $early_status['label'] ); ?><?php echo '' !== (string) $early_status['mode'] ? ' · ' . esc_html( sprintf( /* translators: %s: octal file mode. */ __( 'mode %s', 'simple-redis-cache' ), (string) $early_status['mode'] ) ) : ''; ?><?php if ( ! empty( $early_status['permissions_warning'] ) ) : ?><br><span class="notice-warning"><?php esc_html_e( 'The generated configuration permissions are broader than the recommended 0640 or stricter.', 'simple-redis-cache' ); ?></span><?php endif; ?></td></tr>
 			<tr><th scope="row"><?php esc_html_e( 'Redis key prefix', 'simple-redis-cache' ); ?></th><td><code><?php echo esc_html( Simple_Redis_Cache_Early_Config::prefix( $config ) ); ?></code><br><span class="description"><?php esc_html_e( 'Define WP_CACHE_KEY_SALT with a non-empty value in wp-config.php to control the leading prefix for every plugin key.', 'simple-redis-cache' ); ?></span></td></tr>
 		</tbody></table>
@@ -708,6 +733,47 @@ final class Simple_Redis_Cache_Admin {
 		}
 
 		echo empty( $lines ) ? esc_html__( 'No outage recorded.', 'simple-redis-cache' ) : implode( '<br>', array_map( 'esc_html', $lines ) );
+	}
+
+	/**
+	 * Progress of the background sweep that removes keys of superseded generations.
+	 *
+	 * @param array<string, mixed> $config
+	 */
+	private static function render_cleanup_state( ?Simple_Redis_Cache_Redis $redis, array $config ): void {
+		$client = null !== $redis ? $redis->client() : null;
+		if ( null === $client ) {
+			esc_html_e( 'Unavailable', 'simple-redis-cache' );
+			return;
+		}
+
+		$state = Simple_Redis_Cache_Cleanup::state( $client, $config );
+		$lines = array();
+		if ( '' !== (string) ( $state['cursor'] ?? '' ) ) {
+			$lines[] = __( 'Removing keys of superseded generations in the background.', 'simple-redis-cache' );
+		}
+		if ( ! empty( $state['last_completed'] ) ) {
+			// A plain variable: make-pot skips an _n() whose count contains `??`.
+			$removed = (int) ( $state['last_deleted'] ?? 0 );
+			$lines[] = sprintf(
+				/* translators: 1: date and time, 2: number of Redis keys. */
+				_n( 'Last pass finished %1$s and removed %2$d key.', 'Last pass finished %1$s and removed %2$d keys.', $removed, 'simple-redis-cache' ),
+				wp_date( 'Y-m-d H:i:s', (int) $state['last_completed'] ),
+				$removed
+			);
+		}
+		if ( ! empty( $state['error'] ) ) {
+			$lines[] = sprintf(
+				/* translators: %s: Redis error. */
+				__( 'The last run failed: %s', 'simple-redis-cache' ),
+				(string) $state['error']
+			);
+		}
+		if ( empty( $lines ) ) {
+			$lines[] = __( 'Nothing removed yet. After every purge, WP-Cron removes the keys of the old generation in the background.', 'simple-redis-cache' );
+		}
+
+		echo implode( '<br>', array_map( 'esc_html', $lines ) );
 	}
 
 	/**

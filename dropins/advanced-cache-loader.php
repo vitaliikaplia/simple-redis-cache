@@ -58,8 +58,10 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 
 		/** @param array<string, mixed> $config */
 		public static function run( array $config, string $plugin_dir ): void {
-			$page  = (array) ( $config['page'] ?? array() );
-			$debug = ! empty( $page['debug_header'] ) || self::is_warm_request();
+			$page   = (array) ( $config['page'] ?? array() );
+			$secret = (string) ( $config['site']['secret'] ?? '' );
+			$warm   = self::is_warm_request( $secret );
+			$debug  = ! empty( $page['debug_header'] ) || $warm;
 
 			if ( function_exists( 'is_multisite' ) && is_multisite() ) {
 				self::debug_header( $debug, 'BYPASS' );
@@ -107,7 +109,6 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 					? ''
 					: Simple_Redis_Cache_Early_Config::prefix( $config ) . 'page:' . max( 1, $generation ) . ':variants:' . $request->variant_group(),
 			);
-			$secret = (string) ( $config['site']['secret'] ?? '' );
 
 			/*
 			 * Never serve an auth-cookie variant before WordPress has validated the
@@ -139,7 +140,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 						if ( headers_sent() ) {
 							return;
 						}
-						self::serve( $payload, $request->is_head(), $debug, self::shared_max_age( $payload, $page, $request->vary_cookie_values() ) );
+						self::serve( $payload, $request->is_head(), $debug, self::shared_max_age( $payload, $page, $request->vary_cookie_values() ), false, $warm );
 					}
 				}
 
@@ -216,6 +217,44 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 
 			$GLOBALS['simple_redis_cache_logged_in_context'] = $context;
 			add_action( 'template_redirect', array( self::class, 'register_logged_in_template_filter' ), PHP_INT_MAX );
+			/*
+			 * The capture of a logged-in page starts only at template_include, but core
+			 * and plugins create nonces long before — wp_rest when the scripts are set up
+			 * at init. Note every one from here on, so the capture can account for them.
+			 */
+			self::$early_nonces = array();
+			add_filter( 'nonce_life', array( self::class, 'note_early_nonce' ), PHP_INT_MAX, 2 );
+		}
+
+		/**
+		 * Nonce actions seen before a logged-in capture started, with their filtered
+		 * nonce_life and when they were seen; null once more were seen than tracked.
+		 *
+		 * @var array<string, array{action: int|string, life: int, at: int}>|null
+		 */
+		public static ?array $early_nonces = array();
+
+		/**
+		 * nonce_life filter until the logged-in capture takes over. Core applies it
+		 * inside wp_nonce_tick() for every nonce created or verified.
+		 *
+		 * @param mixed $life   Seconds; returned unchanged.
+		 * @param mixed $action The nonce action.
+		 * @return mixed
+		 */
+		public static function note_early_nonce( mixed $life, mixed $action = -1 ): mixed {
+			if ( null === self::$early_nonces || ! is_numeric( $life ) || ( ! is_string( $action ) && ! is_int( $action ) ) ) {
+				return $life;
+			}
+
+			$key = (string) $action;
+			if ( ! isset( self::$early_nonces[ $key ] ) ) {
+				self::$early_nonces = count( self::$early_nonces ) >= 256
+					? null
+					: self::$early_nonces + array( $key => array( 'action' => $action, 'life' => (int) $life, 'at' => time() ) );
+			}
+
+			return $life;
 		}
 
 		/**
@@ -723,8 +762,12 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 		 * are read only by a runtime that has none yet, and only where their content
 		 * binding is still enough for the enabled invalidation options.
 		 *
+		 * A payload may carry valid_until, the moment a guest nonce in its HTML may
+		 * stop verifying. It is optional, so payloads written without it still work;
+		 * once that moment has passed the payload is never served.
+		 *
 		 * @param array<string, mixed> $page_config
-		 * @return array{version: int, status: int, type: string, headers: array<int, array{name: string, value: string}>, body: string, stored_at: int, resources: array<int, array{type: string, id: int, version: string}>}|null
+		 * @return array{version: int, status: int, type: string, headers: array<int, array{name: string, value: string}>, body: string, stored_at: int, valid_until: int, resources: array<int, array{type: string, id: int, version: string}>}|null
 		 */
 		private static function decode_payload( string $stored, array $page_config, string $cache_key, string $secret ): ?array {
 			if ( str_starts_with( $stored, Simple_Redis_Cache_Early_Config::PAGE_PAYLOAD_PREFIX ) ) {
@@ -762,6 +805,11 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 			$status = (int) ( $payload['status'] ?? 0 );
 			$type   = (string) ( $payload['type'] ?? '' );
 			if ( ! self::page_type_enabled( $type, $status, $page_config ) ) {
+				return null;
+			}
+
+			$valid_until = max( 0, (int) ( $payload['valid_until'] ?? 0 ) );
+			if ( $valid_until > 0 && $valid_until <= time() ) {
 				return null;
 			}
 
@@ -830,8 +878,9 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 				'type'      => $type,
 				'headers'   => $safe_headers,
 				'body'      => $body,
-				'stored_at' => max( 0, (int) ( $payload['stored_at'] ?? 0 ) ),
-				'resources' => $resources,
+				'stored_at'   => max( 0, (int) ( $payload['stored_at'] ?? 0 ) ),
+				'valid_until' => $valid_until,
+				'resources'   => $resources,
 			);
 		}
 
@@ -871,7 +920,8 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 		/**
 		 * The s-maxage a public HIT may advertise. A page varied by cookie never
 		 * gets one: a CDN keys by URL alone and would hand the first variant to
-		 * everyone. A 404 or search result is capped like its Redis lifetime.
+		 * everyone. A 404 or search result is capped like its Redis lifetime, and a
+		 * page holding a guest nonce never outlives that nonce at the edge either.
 		 *
 		 * @param array<string, mixed>  $payload
 		 * @param array<string, mixed>  $page_config
@@ -884,6 +934,11 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 			}
 			if ( in_array( (string) ( $payload['type'] ?? '' ), array( '404', 'search' ), true ) ) {
 				$seconds = min( $seconds, Simple_Redis_Cache_Early_Config::SHORT_PAGE_TTL );
+			}
+
+			$valid_until = (int) ( $payload['valid_until'] ?? 0 );
+			if ( $valid_until > 0 ) {
+				$seconds = min( $seconds, max( 0, $valid_until - time() ) );
 			}
 
 			return $seconds;
@@ -917,7 +972,7 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 		}
 
 		/** @param array<string, mixed> $payload */
-		private static function serve( array $payload, bool $head_request, bool $debug, int $shared_max_age = 0, bool $private_response = false ): never {
+		private static function serve( array $payload, bool $head_request, bool $debug, int $shared_max_age = 0, bool $private_response = false, bool $warm_request = false ): never {
 			if ( ! headers_sent() ) {
 				http_response_code( (int) $payload['status'] );
 				$seen_headers = array();
@@ -927,7 +982,14 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 					$seen_headers[ $lower_name ] = true;
 				}
 
-				if ( $private_response ) {
+				if ( $warm_request ) {
+					/*
+					 * This copy carries the cache-state header for the warming administrator.
+					 * Replace whatever policy the page stored, so no CDN or proxy keeps it
+					 * and hands the header to visitors. Warming fills Redis, not the edge.
+					 */
+					header( 'Cache-Control: private, no-store', true );
+				} elseif ( $private_response ) {
 					/*
 					 * A session-specific response whose stored headers carry no policy of
 					 * their own must still say so out loud. Sites that remove the standard
@@ -1011,9 +1073,15 @@ if ( ! class_exists( 'Simple_Redis_Cache_Advanced_Cache_Loader', false ) ) {
 			}
 		}
 
-		private static function is_warm_request(): bool {
+		/**
+		 * Whether this request comes from the cache warmer. Anyone can send the
+		 * header, so it counts only with an unexpired token signed with this site's
+		 * page secret; the warming screen and its server-side fallback mint those.
+		 * Without a valid token the request is an ordinary one.
+		 */
+		private static function is_warm_request( string $secret ): bool {
 			$value = $_SERVER['HTTP_X_SIMPLE_REDIS_CACHE_WARM'] ?? '';
-			return is_scalar( $value ) && '1' === trim( (string) $value );
+			return is_string( $value ) && '' !== $value && Simple_Redis_Cache_Early_Config::is_valid_warm_token( $value, $secret );
 		}
 
 		private static function lock_token(): string {

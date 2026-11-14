@@ -3,6 +3,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', '/srv/example/' );
 define( 'WP_CONTENT_DIR', '/srv/example/wp-content' );
 define( 'YEAR_IN_SECONDS', 31536000 );

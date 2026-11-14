@@ -8,6 +8,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 define( 'HOUR_IN_SECONDS', 3600 );
 define( 'SIMPLE_REDIS_CACHE_VERSION', '0.3.0' );

@@ -124,6 +124,16 @@ final class Simple_Redis_Cache_Page_Request {
 			return null;
 		}
 
+		/*
+		 * parse_url() reads "//example.test/" as a network-path reference: the first
+		 * segment becomes the host and the rest the path, so it would share the key
+		 * of "/". WordPress routes the raw path instead, and whatever it renders for
+		 * that must never land under a legitimate page's key.
+		 */
+		if ( str_starts_with( $request_uri, '//' ) ) {
+			return null;
+		}
+
 		$parts = parse_url( $request_uri );
 		if ( false === $parts || isset( $parts['user'] ) || isset( $parts['pass'] ) || isset( $parts['fragment'] ) ) {
 			return null;
@@ -495,6 +505,7 @@ final class Simple_Redis_Cache_Page_Request {
 	 * Matching is case-insensitive. An administrator writing /My-Account/* means the
 	 * same page as /my-account/, and a silently ineffective exclusion is far worse
 	 * than an extra bypass. This also matches how ignored query parameters behave.
+	 * Case folding covers UTF-8 slugs too (/Мій-кабінет/* excludes /мій-кабінет/).
 	 *
 	 * @param string[] $patterns
 	 */
@@ -509,7 +520,10 @@ final class Simple_Redis_Cache_Page_Request {
 				$pattern = '/' . $pattern;
 			}
 
-			if ( str_ends_with( $pattern, '/*' ) && 0 === strcasecmp( rtrim( $path, '/' ), substr( $pattern, 0, -2 ) ) ) {
+			if (
+				str_ends_with( $pattern, '/*' ) &&
+				self::regex_matches( '^' . preg_quote( substr( $pattern, 0, -2 ), '~' ) . '$', rtrim( $path, '/' ), true )
+			) {
 				return true;
 			}
 
@@ -580,6 +594,11 @@ final class Simple_Redis_Cache_Page_Request {
 
 			$is_ignored = false;
 			foreach ( $ignored_patterns as $ignored_pattern ) {
+				// Settings refuse wildcard-only patterns; one saved before that still must
+				// not merge every URL with a query into its base page.
+				if ( Simple_Redis_Cache_Early_Config::is_wildcard_only_pattern( (string) $ignored_pattern ) ) {
+					continue;
+				}
 				if ( self::pattern_matches( $php_name, (string) $ignored_pattern, true, false ) ) {
 					$is_ignored = true;
 					break;
@@ -640,11 +659,34 @@ final class Simple_Redis_Cache_Page_Request {
 
 		$has_wildcards = str_contains( $pattern, '*' ) || str_contains( $pattern, '?' );
 		if ( $substring_without_wildcard && ! $has_wildcards ) {
-			return $case_insensitive ? false !== stripos( $value, $pattern ) : false !== strpos( $value, $pattern );
+			return $case_insensitive ? self::regex_matches( preg_quote( $pattern, '~' ), $value, true ) : false !== strpos( $value, $pattern );
 		}
 
 		$quoted = preg_quote( $pattern, '~' );
 		$quoted = str_replace( array( '\\*', '\\?' ), array( '.*', '.' ), $quoted );
-		return 1 === preg_match( '~^' . $quoted . '$~' . ( $case_insensitive ? 'i' : '' ), $value );
+		return self::regex_matches( '^' . $quoted . '$', $value, $case_insensitive );
+	}
+
+	/**
+	 * Match a "~"-delimited pattern body. Case-insensitive matching folds UTF-8
+	 * letters, not only ASCII, whenever both the pattern and the subject are valid
+	 * UTF-8; "?" then stands for one character rather than one byte. Anything else
+	 * — a raw Latin-1 byte in a path, say — falls back to byte-wise ASCII folding,
+	 * because /u refuses invalid UTF-8 outright. mbstring is not needed.
+	 */
+	private static function regex_matches( string $body, string $value, bool $case_insensitive ): bool {
+		if ( ! $case_insensitive ) {
+			return 1 === preg_match( '~' . $body . '~', $value );
+		}
+
+		// "//u" only validates; with an invalid subject it returns false and no warning.
+		if ( 1 === preg_match( '//u', $body ) && 1 === preg_match( '//u', $value ) ) {
+			$result = preg_match( '~' . $body . '~iu', $value );
+			if ( false !== $result ) {
+				return 1 === $result;
+			}
+		}
+
+		return 1 === preg_match( '~' . $body . '~i', $value );
 	}
 }

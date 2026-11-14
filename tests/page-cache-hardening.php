@@ -10,6 +10,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 $test_content = sys_get_temp_dir() . '/src-hardening-' . bin2hex( random_bytes( 6 ) );
 mkdir( $test_content );
 

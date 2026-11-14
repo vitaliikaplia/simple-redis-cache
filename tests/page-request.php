@@ -7,6 +7,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 
 // cache_key() resolves the Redis prefix through the early config.
@@ -115,5 +120,61 @@ $assert( false, $request( '/my-account/orders/', $excluded ) instanceof Simple_R
 $assert( false, $request( '/My-Account/', $excluded ) instanceof Simple_Redis_Cache_Page_Request, 'a wildcard exclusion also covers its own base path' );
 $assert( false, $request( '/secret-page/', $excluded ) instanceof Simple_Redis_Cache_Page_Request, 'a differently-cased exact exclusion still applies' );
 $assert( true, $request( '/my-accounts-payable/', $excluded ) instanceof Simple_Redis_Cache_Page_Request, 'an unrelated path sharing a prefix is not excluded' );
+
+// Case folding is not ASCII-only: Cyrillic and other UTF-8 slugs fold too.
+$encode  = static fn( string $path ): string => implode( '/', array_map( 'rawurlencode', explode( '/', $path ) ) );
+$unicode = $config;
+$unicode['page']['excluded_paths'] = array( '/Мій-Кабінет/*', '/СЕКРЕТ/', '/д?м/' );
+$assert( false, $request( $encode( '/мій-кабінет/замовлення/' ), $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'a differently-cased Cyrillic wildcard exclusion still applies' );
+$assert( false, $request( $encode( '/мій-кабінет/' ), $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'a Cyrillic wildcard exclusion also covers its own base path in another case' );
+$assert( false, $request( $encode( '/секрет/' ), $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'a differently-cased exact Cyrillic exclusion still applies' );
+$assert( false, $request( $encode( '/дім/' ), $unicode ) instanceof Simple_Redis_Cache_Page_Request, '"?" in a path pattern stands for one UTF-8 character, not one byte' );
+$assert( true, $request( $encode( '/мій-кабінетик/' ), $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'an unrelated Cyrillic path sharing a prefix is not excluded' );
+$unicode['page']['excluded_paths'] = array( '/кошик/*' );
+$assert( false, $request( $encode( '/КОШИК/' ), $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'an upper-case Cyrillic request still matches a lower-case exclusion' );
+
+// A path that is not valid UTF-8 cannot use Unicode folding; it falls back to the
+// byte-wise ASCII comparison instead of failing open or raising a warning.
+$unicode['page']['excluded_paths'] = array( '/Shop/*', '/Мій-Кабінет/*', "/caf\xE9/*" );
+$assert( false, $request( '/shop/%FF/', $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'an invalid UTF-8 path no longer matches an ASCII exclusion case-insensitively' );
+$assert( false, $request( '/CAF%E9/menu/', $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'an invalid UTF-8 pattern no longer matches its own bytes' );
+$assert( true, $request( '/other/%FF/', $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'an invalid UTF-8 path that matches no exclusion stopped being cacheable' );
+$unicode['page']['excluded_paths']       = array();
+$unicode['page']['excluded_user_agents'] = array( 'ПОШУКОВИК' );
+$_COOKIE = array();
+$_SERVER = array(
+	'REQUEST_METHOD'  => 'GET',
+	'HTTP_HOST'       => 'example.test',
+	'SERVER_PORT'     => '80',
+	'REQUEST_URI'     => '/',
+	'HTTP_USER_AGENT' => 'Mozilla/5.0 (compatible; пошуковик/1.0)',
+);
+$assert( false, Simple_Redis_Cache_Page_Request::from_globals( $unicode ) instanceof Simple_Redis_Cache_Page_Request, 'a Cyrillic user-agent exclusion is case-sensitive' );
+
+// parse_url() reads "//host/path" as host plus path, which would share the key of
+// "/path" while WordPress routes the raw URI. Any such request bypasses.
+$assert( false, $request( '//example.test/', $config ) instanceof Simple_Redis_Cache_Page_Request, 'a network-path request URI shares the home page key' );
+$assert( false, $request( '//example.test/hello-world/', $config ) instanceof Simple_Redis_Cache_Page_Request, 'a network-path request URI shares an inner page key' );
+$assert( false, $request( '//other.test/hello-world/', $config ) instanceof Simple_Redis_Cache_Page_Request, 'a network-path request URI for another host is cacheable' );
+$assert( true, $request( '/hello//world/', $config ) instanceof Simple_Redis_Cache_Page_Request, 'an inner double slash stopped being an ordinary path' );
+
+// A wildcard-only ignore pattern would drop every parameter from the key, so
+// /?p=2 would be served the cached home page. Settings refuse one; a config saved
+// before that still must not merge pages.
+$assert( true, Simple_Redis_Cache_Early_Config::is_wildcard_only_pattern( '*' ), 'a bare * is not recognised as wildcard-only' );
+$assert( true, Simple_Redis_Cache_Early_Config::is_wildcard_only_pattern( ' ?*? ' ), 'a mix of * and ? is not recognised as wildcard-only' );
+$assert( false, Simple_Redis_Cache_Early_Config::is_wildcard_only_pattern( 'utm_*' ), 'utm_* is treated as wildcard-only' );
+$assert( false, Simple_Redis_Cache_Early_Config::is_wildcard_only_pattern( '_*' ), '_* is treated as wildcard-only' );
+$assert( false, Simple_Redis_Cache_Early_Config::is_wildcard_only_pattern( '' ), 'an empty line is treated as wildcard-only' );
+$wild = $config;
+foreach ( array( '*', '?', '**', '*?', '?*' ) as $wild_pattern ) {
+	$wild['page']['ignored_query_parameters'] = array( $wild_pattern, 'utm_*' );
+	$home    = $request( '/', $wild );
+	$paged   = $request( '/?p=2', $wild );
+	$tracked = $request( '/?utm_source=news', $wild );
+	$assert( true, $home && $paged && $paged->cache_key( 1, $wild ) !== $home->cache_key( 1, $wild ), "the ignored pattern '{$wild_pattern}' merged /?p=2 into the home page key" );
+	$assert( true, $paged && $paged->is_storable(), "the ignored pattern '{$wild_pattern}' still counts p as an ignored parameter" );
+	$assert( true, $home && $tracked && $tracked->cache_key( 1, $wild ) === $home->cache_key( 1, $wild ), "a real ignore pattern next to '{$wild_pattern}' stopped working" );
+}
 
 fwrite( STDOUT, "Page-request checks passed.\n" );

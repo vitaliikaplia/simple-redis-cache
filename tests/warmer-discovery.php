@@ -12,6 +12,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 define( 'SIMPLE_REDIS_CACHE_VERSION', '0.0.0-test' );
 
@@ -22,6 +27,40 @@ function wp_parse_url( string $url, int $component = -1 ): mixed {
 function __( string $text, string $domain = 'default' ): string {
 	unset( $domain );
 	return $text;
+}
+
+function get_option( string $name, mixed $default = false ): mixed {
+	unset( $name );
+	return $default;
+}
+
+function add_query_arg( string $key, mixed $value, string $url ): string {
+	return $url . ( str_contains( $url, '?' ) ? '&' : '?' ) . $key . '=' . rawurlencode( (string) $value );
+}
+
+function get_post_stati( array $args, string $output ): array {
+	unset( $args, $output );
+	return array( 'publish' );
+}
+
+function get_author_posts_url( int $author_id ): string {
+	++$GLOBALS['src_test_lookups'];
+	return 'https://example.test/author/' . $author_id . '/';
+}
+
+function get_year_link( int $year ): string {
+	++$GLOBALS['src_test_lookups'];
+	return 'https://example.test/' . $year . '/';
+}
+
+function get_month_link( int $year, int $month ): string {
+	++$GLOBALS['src_test_lookups'];
+	return 'https://example.test/' . $year . '/' . $month . '/';
+}
+
+function get_day_link( int $year, int $month, int $day ): string {
+	++$GLOBALS['src_test_lookups'];
+	return 'https://example.test/' . $year . '/' . $month . '/' . $day . '/';
 }
 
 require_once dirname( __DIR__ ) . '/includes/class-simple-redis-cache-warmer.php';
@@ -56,6 +95,63 @@ $assert( ! $same( 'https://example.test/Sale/', 'https://example.test/sale/' ), 
 $bound = $reflection->getConstant( 'MAX_DISCOVERED_URLS' );
 $assert( is_int( $bound ) && $bound > 0, 'Discovery no longer declares an upper bound on the URL set.' );
 
+/*
+ * Once discovery hits its bound every further URL is dropped, so the producers
+ * must stop as well instead of spinning through huge archives for nothing.
+ */
+$added   = 0;
+$add_url = static function ( string $url ) use ( &$added ): void {
+	unset( $url );
+	++$added;
+};
+$stop_after = static function ( int $limit ) use ( &$added ): callable {
+	return static function () use ( &$added, $limit ): bool {
+		return $added >= $limit;
+	};
+};
+
+$paginate = $reflection->getMethod( 'add_archive_with_pagination' );
+$added    = 0;
+$paginate->invoke( null, 'https://example.test/blog/', 1000000, 1, $add_url, $stop_after( 3 ) );
+$assert( 3 === $added, 'Archive pagination kept producing URLs after discovery stopped (' . $added . ' calls).' );
+
+$added = 0;
+$paginate->invoke( null, 'https://example.test/blog/', 5, 1, $add_url, null );
+$assert( 5 === $added, 'Archive pagination without a stop signal no longer lists every page.' );
+
+$GLOBALS['src_test_lookups'] = 0;
+$GLOBALS['wpdb']             = new class() {
+	public string $posts = 'wp_posts';
+
+	public function prepare( string $sql, array $args ): string {
+		unset( $args );
+		return $sql;
+	}
+
+	public function get_results( string $sql ): array {
+		if ( str_contains( $sql, 'post_author' ) ) {
+			return array_map(
+				static fn ( int $id ): object => (object) array( 'post_author' => $id, 'total' => 1 ),
+				range( 1, 50 )
+			);
+		}
+
+		return array_map(
+			static fn ( int $day ): object => (object) array( 'year_number' => 2020 + intdiv( $day, 28 ), 'month_number' => 1 + intdiv( $day, 28 ) % 12, 'day_number' => 1 + $day % 28, 'total' => 1 ),
+			range( 0, 99 )
+		);
+	}
+};
+
+$added = 0;
+$reflection->getMethod( 'add_author_urls' )->invoke( null, $add_url, 10, $stop_after( 2 ) );
+$assert( 2 === $added && $GLOBALS['src_test_lookups'] <= 2, 'Author discovery kept walking authors after discovery stopped (' . $GLOBALS['src_test_lookups'] . ' lookups).' );
+
+$GLOBALS['src_test_lookups'] = 0;
+$added                       = 0;
+$reflection->getMethod( 'add_date_urls' )->invoke( null, $add_url, 10, $stop_after( 4 ) );
+$assert( 4 === $added && $GLOBALS['src_test_lookups'] <= 4, 'Date discovery kept walking dates after discovery stopped (' . $GLOBALS['src_test_lookups'] . ' lookups).' );
+
 if ( ! empty( $failures ) ) {
 	foreach ( $failures as $failure ) {
 		fwrite( STDERR, 'FAIL: ' . $failure . "\n" );
@@ -63,4 +159,4 @@ if ( ! empty( $failures ) ) {
 	exit( 1 );
 }
 
-echo "OK: warming deduplicates equivalent URLs and keeps discovery bounded.\n";
+echo "OK: warming deduplicates equivalent URLs, keeps discovery bounded and stops producing at the bound.\n";

@@ -118,7 +118,7 @@ final class Simple_Redis_Cache_Warmer {
 
 		if ( in_array( self::SYSTEM_HOME, $system, true ) ) {
 			if ( ! empty( $page['cache_home'] ) ) {
-				self::add_home_urls( $add_url, $posts_per_page );
+				self::add_home_urls( $add_url, $posts_per_page, $should_stop );
 			} else {
 				$warnings[] = __( 'Homepage URLs were skipped because home-page caching is disabled.', 'simple-redis-cache' );
 			}
@@ -126,7 +126,7 @@ final class Simple_Redis_Cache_Warmer {
 
 		if ( in_array( self::SYSTEM_AUTHORS, $system, true ) ) {
 			if ( ! empty( $page['cache_archives'] ) ) {
-				self::add_author_urls( $add_url, $posts_per_page );
+				self::add_author_urls( $add_url, $posts_per_page, $should_stop );
 			} else {
 				$warnings[] = __( 'Author archives were skipped because archive caching is disabled.', 'simple-redis-cache' );
 			}
@@ -134,7 +134,7 @@ final class Simple_Redis_Cache_Warmer {
 
 		if ( in_array( self::SYSTEM_DATES, $system, true ) ) {
 			if ( ! empty( $page['cache_archives'] ) ) {
-				self::add_date_urls( $add_url, $posts_per_page );
+				self::add_date_urls( $add_url, $posts_per_page, $should_stop );
 			} else {
 				$warnings[] = __( 'Date archives were skipped because archive caching is disabled.', 'simple-redis-cache' );
 			}
@@ -175,7 +175,7 @@ final class Simple_Redis_Cache_Warmer {
 
 			$total = self::add_post_type_urls( $post_type, $needs_singular, $add_url, $should_stop );
 			if ( is_string( $archive_url ) ) {
-				self::add_archive_with_pagination( $archive_url, $total, $posts_per_page, $add_url );
+				self::add_archive_with_pagination( $archive_url, $total, $posts_per_page, $add_url, $should_stop );
 			}
 		}
 
@@ -286,6 +286,21 @@ final class Simple_Redis_Cache_Warmer {
 		return self::warm_result( 'failed', $verify['http_status'] ?? 0, 'MISS', __( 'Redis did not return a cache HIT after the page was rendered.', 'simple-redis-cache' ) );
 	}
 
+	/**
+	 * A fresh token for the X-Simple-Redis-Cache-Warm header, signed with the page
+	 * secret the early runtime checks it against. Empty while there is no secret.
+	 *
+	 * @param array<string, mixed>|null $config
+	 */
+	public static function warm_token( ?array $config = null ): string {
+		$config = $config ?? Simple_Redis_Cache_Config::runtime() ?? Simple_Redis_Cache_Config::get();
+
+		return Simple_Redis_Cache_Early_Config::warm_token(
+			(string) ( $config['site']['secret'] ?? '' ),
+			time() + Simple_Redis_Cache_Early_Config::WARM_TOKEN_LIFETIME
+		);
+	}
+
 	public static function sign_url( string $url, int $user_id ): string {
 		return hash_hmac( 'sha256', $user_id . "\0" . $url, wp_salt( 'nonce' ) );
 	}
@@ -321,7 +336,7 @@ final class Simple_Redis_Cache_Warmer {
 	}
 
 	/** @param callable(string):void $add_url */
-	private static function add_home_urls( callable $add_url, int $posts_per_page ): void {
+	private static function add_home_urls( callable $add_url, int $posts_per_page, callable $should_stop ): void {
 		$add_url( home_url( '/' ) );
 
 		$archive_url = get_post_type_archive_link( 'post' );
@@ -331,12 +346,12 @@ final class Simple_Redis_Cache_Warmer {
 		}
 
 		if ( is_string( $archive_url ) ) {
-			self::add_archive_with_pagination( $archive_url, self::count_posts( 'post' ), $posts_per_page, $add_url );
+			self::add_archive_with_pagination( $archive_url, self::count_posts( 'post' ), $posts_per_page, $add_url, $should_stop );
 		}
 	}
 
 	/** @param callable(string):void $add_url */
-	private static function add_author_urls( callable $add_url, int $posts_per_page ): void {
+	private static function add_author_urls( callable $add_url, int $posts_per_page, callable $should_stop ): void {
 		global $wpdb;
 
 		$statuses = self::public_statuses();
@@ -350,15 +365,18 @@ final class Simple_Redis_Cache_Warmer {
 		$rows         = $wpdb->get_results( $wpdb->prepare( $sql, $params ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
 		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+			if ( $should_stop() ) {
+				return;
+			}
 			$user_id = (int) ( $row->post_author ?? 0 );
 			if ( $user_id > 0 ) {
-				self::add_archive_with_pagination( get_author_posts_url( $user_id ), (int) ( $row->total ?? 0 ), $posts_per_page, $add_url );
+				self::add_archive_with_pagination( get_author_posts_url( $user_id ), (int) ( $row->total ?? 0 ), $posts_per_page, $add_url, $should_stop );
 			}
 		}
 	}
 
 	/** @param callable(string):void $add_url */
-	private static function add_date_urls( callable $add_url, int $posts_per_page ): void {
+	private static function add_date_urls( callable $add_url, int $posts_per_page, callable $should_stop ): void {
 		global $wpdb;
 
 		$statuses = self::public_statuses();
@@ -388,11 +406,20 @@ final class Simple_Redis_Cache_Warmer {
 		}
 
 		foreach ( $years as $year => $year_total ) {
-			self::add_archive_with_pagination( get_year_link( (int) $year ), (int) $year_total, $posts_per_page, $add_url );
+			if ( $should_stop() ) {
+				return;
+			}
+			self::add_archive_with_pagination( get_year_link( (int) $year ), (int) $year_total, $posts_per_page, $add_url, $should_stop );
 			foreach ( $months[ $year ] ?? array() as $month => $month_total ) {
-				self::add_archive_with_pagination( get_month_link( (int) $year, (int) $month ), (int) $month_total, $posts_per_page, $add_url );
+				if ( $should_stop() ) {
+					return;
+				}
+				self::add_archive_with_pagination( get_month_link( (int) $year, (int) $month ), (int) $month_total, $posts_per_page, $add_url, $should_stop );
 				foreach ( $days[ $year ][ $month ] ?? array() as $day => $day_total ) {
-					self::add_archive_with_pagination( get_day_link( (int) $year, (int) $month, (int) $day ), (int) $day_total, $posts_per_page, $add_url );
+					if ( $should_stop() ) {
+						return;
+					}
+					self::add_archive_with_pagination( get_day_link( (int) $year, (int) $month, (int) $day ), (int) $day_total, $posts_per_page, $add_url, $should_stop );
 				}
 			}
 		}
@@ -477,7 +504,7 @@ final class Simple_Redis_Cache_Warmer {
 					$total            = array_key_exists( $term_taxonomy_id, $archive_counts )
 						? $archive_counts[ $term_taxonomy_id ]
 						: max( 0, (int) $term->count );
-					self::add_archive_with_pagination( $link, $total, $posts_per_page, $add_url );
+					self::add_archive_with_pagination( $link, $total, $posts_per_page, $add_url, $should_stop );
 				}
 			}
 
@@ -564,10 +591,17 @@ final class Simple_Redis_Cache_Warmer {
 	}
 
 	/** @param callable(string):void $add_url */
-	private static function add_archive_with_pagination( string $base_url, int $total, int $posts_per_page, callable $add_url ): void {
+	private static function add_archive_with_pagination( string $base_url, int $total, int $posts_per_page, callable $add_url, ?callable $should_stop = null ): void {
+		if ( null !== $should_stop && $should_stop() ) {
+			return;
+		}
 		$add_url( $base_url );
 		$pages = (int) ceil( max( 0, $total ) / max( 1, $posts_per_page ) );
 		for ( $page = 2; $page <= $pages; $page++ ) {
+			// Past the discovery bound every further URL is dropped anyway.
+			if ( null !== $should_stop && $should_stop() ) {
+				return;
+			}
 			$add_url( self::paged_url( $base_url, $page ) );
 		}
 	}
@@ -638,6 +672,16 @@ final class Simple_Redis_Cache_Warmer {
 
 	/** @return array{http_status:int,cache_status:string}|WP_Error */
 	private static function remote_request( string $url, string $method ): array|WP_Error {
+		$headers = array(
+			'Accept'        => 'text/html,application/xhtml+xml',
+			'Cache-Control' => 'no-cache',
+		);
+		// Only a valid token makes the frontend report its cache state; minted per request.
+		$token = self::warm_token();
+		if ( '' !== $token ) {
+			$headers[ self::WARM_HEADER ] = $token;
+		}
+
 		$response = wp_remote_request(
 			$url,
 			array(
@@ -646,11 +690,7 @@ final class Simple_Redis_Cache_Warmer {
 				'redirection' => 0,
 				'sslverify'   => true,
 				'cookies'     => array(),
-				'headers'     => array(
-					'Accept'        => 'text/html,application/xhtml+xml',
-					'Cache-Control' => 'no-cache',
-					self::WARM_HEADER => '1',
-				),
+				'headers'     => $headers,
 				'user-agent'  => 'Simple Redis Cache/' . SIMPLE_REDIS_CACHE_VERSION . '; ' . home_url( '/' ),
 			)
 		);

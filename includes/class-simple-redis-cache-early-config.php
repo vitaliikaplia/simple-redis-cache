@@ -27,8 +27,23 @@ final class Simple_Redis_Cache_Early_Config {
 	 */
 	public const PAGE_PAYLOAD_PREFIX = "SRCP4\0";
 
+	/**
+	 * Seconds a cache-warming token stays valid. The warming screen renews its
+	 * token before this runs out, and the server-side fallback mints one per request.
+	 */
+	public const WARM_TOKEN_LIFETIME = 3600;
+
+	/** Clock difference tolerated between the server that mints a token and the one that checks it. */
+	private const WARM_TOKEN_SKEW = 60;
+
+	/** Domain separation: a warming token can never be mistaken for a page payload MAC. */
+	private const WARM_TOKEN_CONTEXT = 'simple-redis-cache-warm-token-v1';
+
 	/** @var array<string, mixed>|null */
 	private static ?array $config = null;
+
+	/** Schema version the generated file itself records; 0 when it records none. */
+	private static int $file_version = 0;
 
 	/**
 	 * Return defaults shared by the admin plugin and both drop-ins.
@@ -171,11 +186,32 @@ final class Simple_Redis_Cache_Early_Config {
 		return self::identity_for( (string) WP_CONTENT_DIR );
 	}
 
-	/** The identity of an installation whose wp-content lives at $content_dir. */
-	public static function identity_for( string $content_dir ): string {
+	/**
+	 * Whether $identity names this installation. Before 0.10.0 the path went into
+	 * the identity in whatever letter case PHP was given, so on macOS and Windows a
+	 * stored identity may be that spelling rather than the on-disk one; it still
+	 * counts, so an update never makes a site look like a copy of itself.
+	 */
+	public static function is_install_identity( string $identity ): bool {
+		if ( hash_equals( $identity, self::install_identity() ) ) {
+			return true;
+		}
+
+		$legacy = self::identity_for( (string) WP_CONTENT_DIR, false );
+
+		return $legacy !== self::install_identity() && hash_equals( $identity, $legacy );
+	}
+
+	/**
+	 * The identity of an installation whose wp-content lives at $content_dir.
+	 *
+	 * @param bool $canonical_case Spell the path as it is on disk (see canonical_case()).
+	 */
+	public static function identity_for( string $content_dir, bool $canonical_case = true ): string {
 		global $table_prefix;
 
 		$real = realpath( $content_dir );
+		$path = rtrim( str_replace( '\\', '/', is_string( $real ) ? $real : $content_dir ), '/' );
 
 		return substr(
 			hash(
@@ -183,7 +219,7 @@ final class Simple_Redis_Cache_Early_Config {
 				implode(
 					"\n",
 					array(
-						rtrim( str_replace( '\\', '/', is_string( $real ) ? $real : $content_dir ), '/' ),
+						$canonical_case ? self::canonical_case( $path ) : $path,
 						defined( 'DB_NAME' ) ? (string) DB_NAME : '',
 						isset( $table_prefix ) && is_string( $table_prefix ) ? $table_prefix : '',
 					)
@@ -192,6 +228,49 @@ final class Simple_Redis_Cache_Early_Config {
 			0,
 			32
 		);
+	}
+
+	/**
+	 * The on-disk spelling of a path on a case-insensitive filesystem.
+	 *
+	 * realpath() keeps the case it was given on macOS and Windows, so WP-CLI run
+	 * with `--path=/users/me/site` would derive another identity than the web for
+	 * the very same installation, and take it for a copy. Each component that
+	 * does not exist in exactly this spelling is replaced by its only
+	 * case-insensitive match in the parent directory. Elsewhere, and whenever a
+	 * directory cannot be listed, the path is returned unchanged.
+	 *
+	 * @param string|null $os_family For tests; defaults to PHP_OS_FAMILY.
+	 */
+	public static function canonical_case( string $path, ?string $os_family = null ): string {
+		// A UNC path (//server/share) is left as it is: its first parts are no directories.
+		if ( ! in_array( $os_family ?? PHP_OS_FAMILY, array( 'Darwin', 'Windows' ), true ) || '' === $path || str_starts_with( $path, '//' ) ) {
+			return $path;
+		}
+
+		$parts = explode( '/', $path );
+		$out   = (string) array_shift( $parts );
+		foreach ( $parts as $part ) {
+			if ( '' === $part ) {
+				continue;
+			}
+
+			$entries = @scandir( '' === $out ? '/' : $out . '/' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- an unreadable directory keeps the typed spelling.
+			if ( is_array( $entries ) && ! in_array( $part, $entries, true ) ) {
+				$matches = array();
+				foreach ( $entries as $entry ) {
+					if ( 0 === strcasecmp( $entry, $part ) ) {
+						$matches[] = $entry;
+					}
+				}
+				if ( 1 === count( $matches ) ) {
+					$part = $matches[0];
+				}
+			}
+			$out .= '/' . $part;
+		}
+
+		return $out;
 	}
 
 	/**
@@ -218,6 +297,9 @@ final class Simple_Redis_Cache_Early_Config {
 			}
 		}
 
+		// Read before the defaults below fill in the current version.
+		self::$file_version = is_int( $config['config_version'] ?? null ) ? $config['config_version'] : 0;
+
 		$defaults = self::defaults();
 		$config   = self::merge( $defaults, $config );
 		// A damaged file must not turn a section into a scalar every request then trips over.
@@ -234,7 +316,7 @@ final class Simple_Redis_Cache_Early_Config {
 		 * an administrator request regenerates this site's own identity.
 		 */
 		$identity = (string) ( $config['site']['identity'] ?? '' );
-		if ( '' !== $identity && ! hash_equals( $identity, self::install_identity() ) ) {
+		if ( '' !== $identity && ! self::is_install_identity( $identity ) ) {
 			$config['object']['enabled']     = false;
 			$config['page']['enabled']       = false;
 			$config['site']['copy_detected'] = true;
@@ -246,7 +328,19 @@ final class Simple_Redis_Cache_Early_Config {
 	}
 
 	public static function reset(): void {
-		self::$config = null;
+		self::$config       = null;
+		self::$file_version = 0;
+	}
+
+	/**
+	 * The schema version the generated file records, before defaults fill it in;
+	 * 0 when there is no file or it records none. The plugin writes this file
+	 * only from stored settings already migrated to that schema, so a current
+	 * version here means the stored settings need no migration either.
+	 */
+	public static function file_version(): int {
+		self::load();
+		return self::$file_version;
 	}
 
 	public static function path(): string {
@@ -280,6 +374,48 @@ final class Simple_Redis_Cache_Early_Config {
 	/** HMAC that binds a serialized page payload to the exact key it was stored under. */
 	public static function page_payload_mac( string $cache_key, string $serialized, string $secret ): string {
 		return hash_hmac( 'sha256', $cache_key . "\0" . $serialized, $secret );
+	}
+
+	/**
+	 * A token for the X-Simple-Redis-Cache-Warm request header: "{expires}.{hmac}".
+	 * Only a request carrying a valid one sees the page-cache state header while the
+	 * debug header is off. A site without a page secret mints no tokens at all.
+	 */
+	public static function warm_token( string $secret, int $expires ): string {
+		if ( '' === $secret || $expires < 1 ) {
+			return '';
+		}
+
+		return $expires . '.' . hash_hmac( 'sha256', self::WARM_TOKEN_CONTEXT . "\0" . $expires, $secret );
+	}
+
+	/**
+	 * Whether a header value is an unexpired warming token minted with this secret.
+	 * A token that claims to live longer than one lifetime is refused too, so a
+	 * leaked one cannot have been minted for longer than an hour.
+	 */
+	public static function is_valid_warm_token( string $token, string $secret, ?int $now = null ): bool {
+		if ( '' === $secret || 1 !== preg_match( '/^([1-9][0-9]{0,11})\.([a-f0-9]{64})$/D', trim( $token ), $match ) ) {
+			return false;
+		}
+
+		$now     = $now ?? time();
+		$expires = (int) $match[1];
+		if ( $expires < $now || $expires > $now + self::WARM_TOKEN_LIFETIME + self::WARM_TOKEN_SKEW ) {
+			return false;
+		}
+
+		return hash_equals( hash_hmac( 'sha256', self::WARM_TOKEN_CONTEXT . "\0" . $expires, $secret ), $match[2] );
+	}
+
+	/**
+	 * Whether an ignored-query-parameter pattern consists of wildcards only. Such a
+	 * pattern ("*", "?", "*?"…) would drop every parameter, or every short one, from
+	 * the cache key, so /?p=2 would be served the cached home page.
+	 */
+	public static function is_wildcard_only_pattern( string $pattern ): bool {
+		$pattern = trim( $pattern );
+		return '' !== $pattern && '' === trim( $pattern, '*?' );
 	}
 
 	/** Shared hash containing post and taxonomy-term HTML content versions. */

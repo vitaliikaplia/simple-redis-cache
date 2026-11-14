@@ -47,6 +47,7 @@ foreach ( array( 'simple-redis-cache-breaker', 'simple-redis-cache-object-dirty'
 	}
 }
 
+wp_clear_scheduled_hook( 'simple_redis_cache_cleanup' );
 delete_option( 'simple_redis_cache_settings' );
 delete_option( '_simple_redis_cache_notices' );
 delete_metadata( 'user', 0, '_simple_redis_cache_notices', '', true );

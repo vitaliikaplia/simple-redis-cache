@@ -76,7 +76,7 @@ final class Simple_Redis_Cache_Config {
 		$config   = $config ?? self::get();
 		$identity = (string) ( $config['site']['identity'] ?? '' );
 
-		return '' !== $identity && ! hash_equals( $identity, Simple_Redis_Cache_Early_Config::install_identity() );
+		return '' !== $identity && ! Simple_Redis_Cache_Early_Config::is_install_identity( $identity );
 	}
 
 	/** Whether the persisted schema predates the code currently running. */
@@ -171,7 +171,7 @@ final class Simple_Redis_Cache_Config {
 			'cache_search'             => ! empty( $page_input['cache_search'] ),
 			'cache_404'                => ! empty( $page_input['cache_404'] ),
 			'cache_query_strings'      => ! empty( $page_input['cache_query_strings'] ),
-			'ignored_query_parameters' => self::lines( $page_input['ignored_query_parameters'] ?? '' ),
+			'ignored_query_parameters' => self::ignored_query_parameters( $page_input['ignored_query_parameters'] ?? '' ),
 			'excluded_paths'           => self::lines( $page_input['excluded_paths'] ?? '' ),
 			'excluded_cookies'         => self::lines( $page_input['excluded_cookies'] ?? '' ),
 			'excluded_user_agents'     => self::lines( $page_input['excluded_user_agents'] ?? '' ),
@@ -314,6 +314,34 @@ final class Simple_Redis_Cache_Config {
 		);
 
 		return array_values( array_unique( array_filter( $lines, 'strlen' ) ) );
+	}
+
+	/**
+	 * Ignored query parameters, without wildcard-only patterns: "*" or "?" alone
+	 * would drop every (short) parameter from the cache key, and /?p=2 would then
+	 * be served the cached home page. Such a line is dropped and reported.
+	 *
+	 * @return string[]
+	 */
+	private static function ignored_query_parameters( mixed $value ): array {
+		$patterns = self::lines( $value );
+		$kept     = array_values(
+			array_filter(
+				$patterns,
+				static fn( string $pattern ): bool => ! Simple_Redis_Cache_Early_Config::is_wildcard_only_pattern( $pattern )
+			)
+		);
+
+		if ( count( $kept ) !== count( $patterns ) && function_exists( 'add_settings_error' ) ) {
+			add_settings_error(
+				self::OPTION,
+				'src_wildcard_ignored_query_parameter',
+				__( 'Settings saved, but an ignored query parameter made only of * or ? was removed: it would ignore every parameter, so different pages such as /?p=2 would share one cache entry.', 'simple-redis-cache' ),
+				'error'
+			);
+		}
+
+		return $kept;
 	}
 
 	private static function float_range( mixed $value, float $min, float $max ): float {

@@ -8,6 +8,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 define( 'WP_CONTENT_DIR', dirname( __DIR__ ) );
 define( 'WP_CACHE_KEY_SALT', 'src-generation-test-' . bin2hex( random_bytes( 8 ) ) );

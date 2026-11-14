@@ -20,6 +20,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 $root = dirname( __DIR__ );
 
 $failures = array();
@@ -124,9 +129,79 @@ $scan = static function ( string $code ) use ( $type_ids ): array {
 	$trait_depth = null;
 	$trait_open  = false;
 
+	// Index just past the bracket that closes the one at $index.
+	$balanced = static function ( int $index ) use ( $tokens, $count, $text ): int {
+		$nesting = 0;
+		for ( ; $index < $count; $index++ ) {
+			$current = $text( $index );
+			if ( in_array( $current, array( '(', '[', '{', '${', '#[' ), true ) || $tokens[ $index ]->is( array( T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES, T_ATTRIBUTE ) ) ) {
+				++$nesting;
+			} elseif ( in_array( $current, array( ')', ']', '}' ), true ) && 0 === --$nesting ) {
+				return $index + 1;
+			}
+		}
+
+		return $count;
+	};
+	$names = array( T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NAME_RELATIVE );
+
 	for ( $i = 0; $i < $count; $i++ ) {
 		$token = $tokens[ $i ];
 		$line  = $token->line;
+
+		/*
+		 * Syntax from PHP 8.3–8.5 that newer lexers accept without a word. These are
+		 * cheap token-level detectors, matched by text so they work whether the
+		 * running interpreter knows the newer token (|>, (void), private(set)) or
+		 * still splits it into older ones.
+		 */
+		$current_text = $token->text;
+		if ( '|>' === $current_text || ( '|' === $current_text && '>' === $text( $i + 1 ) ) ) {
+			$problems[] = $line . ': the pipe operator |> needs PHP 8.5';
+		}
+		if ( 1 === preg_match( '/^\(\s*void\s*\)$/i', $current_text ) || ( '(' === $current_text && 'void' === strtolower( $text( $i + 1 ) ) && ')' === $text( $i + 2 ) ) ) {
+			$problems[] = $line . ': the (void) cast needs PHP 8.5';
+		}
+		if ( 1 === preg_match( '/^(public|protected|private)\(set\)$/i', $current_text )
+			|| ( $token->is( array( T_PUBLIC, T_PROTECTED, T_PRIVATE ) ) && '(' === $text( $i + 1 ) && 'set' === strtolower( $text( $i + 2 ) ) && ')' === $text( $i + 3 ) ) ) {
+			$problems[] = $line . ': asymmetric property visibility needs PHP 8.4';
+		}
+		// new Foo()->bar(): 8.1 needs ( new Foo() )->bar(). `new $object->class()` is older and fine.
+		if ( $token->is( T_NEW ) && $i + 2 < $count && $tokens[ $i + 1 ]->is( array_merge( $names, array( T_STATIC ) ) ) && '(' === $text( $i + 2 ) ) {
+			if ( in_array( $text( $balanced( $i + 2 ) ), array( '->', '?->', '::', '[' ), true ) ) {
+				$problems[] = $line . ': member access on new without parentheses needs PHP 8.4';
+			}
+		}
+		// clone( $object, [ ... ] ) with properties to change needs 8.5; clone( $object ) is older.
+		if ( $token->is( T_CLONE ) && '(' === $text( $i + 1 ) ) {
+			$end = $balanced( $i + 1 );
+			for ( $next = $i + 2, $nesting = 0; $next < $end - 1; $next++ ) {
+				$current  = $text( $next );
+				$nesting += in_array( $current, array( '(', '[', '{' ), true ) ? 1 : ( in_array( $current, array( ')', ']', '}' ), true ) ? -1 : 0 );
+				if ( ',' === $current && 0 === $nesting ) {
+					$problems[] = $line . ': clone with properties needs PHP 8.5';
+					break;
+				}
+			}
+		}
+		// Foo::{$name} fetches a constant dynamically (8.3); Foo::{$name}() is an older method call.
+		if ( '::' === $current_text && '{' === $text( $i + 1 ) && '(' !== $text( $balanced( $i + 1 ) ) ) {
+			$problems[] = $line . ': dynamic class constant fetch needs PHP 8.3';
+		}
+		// static $x = f(); — a call in a static variable initializer needs 8.3 (new Foo() is fine).
+		if ( $token->is( T_STATIC ) && $i + 2 < $count && $tokens[ $i + 1 ]->is( T_VARIABLE ) && '=' === $text( $i + 2 ) ) {
+			for ( $next = $i + 3, $nesting = 0; $next < $count; $next++ ) {
+				$current = $text( $next );
+				if ( 0 === $nesting && in_array( $current, array( ';', ',' ), true ) ) {
+					break;
+				}
+				if ( '(' === $current && $tokens[ $next - 1 ]->is( array_merge( $names, array( T_VARIABLE ) ) ) && ! $tokens[ $next - 2 ]->is( T_NEW ) ) {
+					$problems[] = $line . ': a call in a static variable initializer needs PHP 8.3';
+					break;
+				}
+				$nesting += in_array( $current, array( '(', '[', '{' ), true ) ? 1 : ( in_array( $current, array( ')', ']', '}' ), true ) ? -1 : 0 );
+			}
+		}
 
 		if ( '{' === $token->text || $token->is( array( T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES ) ) ) {
 			++$depth;
@@ -171,6 +246,17 @@ $scan = static function ( string $code ) use ( $type_ids ): array {
 			if ( null !== $trait_depth && $depth === $trait_depth ) {
 				$problems[] = $line . ': constants in traits need PHP 8.2';
 			}
+			// Enum properties (8.2) and closures (8.5) in constant expressions.
+			for ( $next = $i + 1; $next < $count && ';' !== $text( $next ); $next++ ) {
+				if ( in_array( $text( $next ), array( '->', '?->' ), true ) ) {
+					$problems[] = $line . ': property fetch in a constant expression needs PHP 8.2';
+					break;
+				}
+				if ( $tokens[ $next ]->is( array( T_FUNCTION, T_FN ) ) ) {
+					$problems[] = $line . ': a closure in a constant expression needs PHP 8.5';
+					break;
+				}
+			}
 			continue;
 		}
 
@@ -185,6 +271,9 @@ $scan = static function ( string $code ) use ( $type_ids ): array {
 			list( $parts, $after ) = $collect( $next );
 			if ( $after < $count && $tokens[ $after ]->is( T_VARIABLE ) ) {
 				$check_type( $parts, $line );
+				if ( '{' === $text( $after + 1 ) ) {
+					$problems[] = $line . ': property hooks need PHP 8.4';
+				}
 			}
 		}
 
@@ -215,6 +304,9 @@ $scan = static function ( string $code ) use ( $type_ids ): array {
 				}
 				if ( 1 === $nesting && $param_start ) {
 					while ( $next < $count && $tokens[ $next ]->is( $modifiers ) ) {
+						if ( $tokens[ $next ]->is( T_FINAL ) ) {
+							$problems[] = $tokens[ $next ]->line . ': final promoted properties need PHP 8.5';
+						}
 						++$next;
 					}
 					list( $parts, $after ) = $collect( $next );
@@ -291,6 +383,20 @@ $must_flag = array(
 	'attribute then true'      => 'function a( #[\\SensitiveParameter] true|string $x ) {}',
 	'attribute then return'    => 'function a( #[Foo( [ 1 ] )] string $p ): true {}',
 	'by-reference function'    => 'function &a(): true {}',
+	'pipe operator'            => '$x = $a |> strtoupper( ... );',
+	'new without parentheses'  => '$x = new A()->b();',
+	'new static chained'       => '$x = new static()->b;',
+	'new then nullsafe'        => '$x = new \\Foo\\Bar( 1 )?->b;',
+	'property hook'            => 'class A { public string $x { get => "a"; } }',
+	'untyped property hook'    => 'class A { public $x { set { $this->y = $value; } } }',
+	'asymmetric visibility'    => 'class A { public private(set) int $x = 1; }',
+	'clone with'               => '$b = clone( $a, [ "x" => 1 ] );',
+	'void cast'                => '(void) foo();',
+	'final promoted property'  => 'class A { function __construct( final public int $x ) {} }',
+	'dynamic class constant'   => '$v = A::{$name};',
+	'static initializer call'  => 'function a() { static $x = foo( 1 ); }',
+	'enum in const expression' => 'const X = Suit::Hearts->value;',
+	'closure in a constant'    => 'class A { const F = static function () {}; }',
 );
 foreach ( $must_flag as $label => $snippet ) {
 	$assert( array() !== $scan( '<?php ' . $snippet ), 'The compatibility scanner missed: ' . $label . '.' );
@@ -314,6 +420,16 @@ $must_pass = array(
 	'empty parameter list'   => 'function a() { return ( $x ) ? new static( $y ) : static fn () => null; }',
 	'call in a default'      => 'function a( array $x = array( 1 ), ?Closure $y = null ): ?array { return a(); }',
 	'constant after a trait' => 'trait T { function a() {} } class B { const X = 1; }',
+	'bitwise or'             => '$x = $a | $b > $c; $y = $a || $b;',
+	'parenthesized new'      => '$x = ( new A() )->b(); $y = new A(); $z = new $cls->name(); $w = new class() {};',
+	'dynamic method call'    => 'A::{"b"}(); $a->{"c"}(); $b = A::B;',
+	'plain clone'            => '$b = clone( $a ); $c = clone $a; $d = f( clone $a, 1 );',
+	'static initializers'    => 'function a() { static $x = array( 1, A::B ), $y = null; static $z = new Foo( 1 ); static $w; }',
+	'void return type'       => 'function a(): void {} $f = fn (): ?int => ( null );',
+	'property defaults'      => 'class A { public array $x = array(); private ?int $y = null; protected static $z = 1; }',
+	'promoted readonly'      => 'class A { function __construct( private readonly int $x, public ?B $y = null ) {} }',
+	'class constant values'  => 'const X = A::B; class C { const D = self::E[ 0 ], F = 1 | 2; }',
+	'set as a name'          => 'class A { public function set( $x ) {} } $a->set( 1 ); private_set();',
 );
 foreach ( $must_pass as $label => $snippet ) {
 	$found = $scan( '<?php ' . $snippet );
@@ -352,4 +468,4 @@ if ( ! empty( $failures ) ) {
 	exit( 1 );
 }
 
-echo "OK: none of the checked PHP 8.2+ constructs or builtins are used, and every declared minimum says PHP 8.1.\n";
+echo "OK: none of the checked PHP 8.2–8.5 constructs or builtins are used, and every declared minimum says PHP 8.1.\n";

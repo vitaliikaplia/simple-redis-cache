@@ -3,6 +3,11 @@
 
 declare(strict_types=1);
 
+// A test script, not part of the plugin: never run it through a web server.
+if ( 'cli' !== PHP_SAPI ) {
+	exit;
+}
+
 define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 
 $GLOBALS['src_test_actions'] = array();
@@ -172,12 +177,15 @@ final class Simple_Redis_Cache_Redis {
 	/** @var array{post?:int[],term?:int[]} */
 	public static array $invalidated = array();
 	public static bool $fail = false;
+	/** Number of atomic bumps requested. */
+	public static int $calls = 0;
 
 	public function __construct( array $config ) {
 		unset( $config );
 	}
 
 	public function bump_page_content_versions( array $resources ): int|false {
+		++self::$calls;
 		if ( self::$fail ) {
 			return false;
 		}
@@ -585,6 +593,16 @@ $assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Installing a plug
 Simple_Redis_Cache_Page_Invalidator::upgraded( null, array( 'action' => 'update', 'type' => 'theme' ) );
 $assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Updating a theme did not clear the page cache.' );
 Simple_Redis_Cache_Page_Invalidator::flush_site_change();
+// Replacing an installed plugin or theme with an uploaded zip is an install for the
+// upgrader, but it changes running code exactly like an update.
+$GLOBALS['src_test_actions'] = array();
+Simple_Redis_Cache_Page_Invalidator::init();
+$overwrote = $GLOBALS['src_test_actions']['upgrader_overwrote_package'][0][0] ?? null;
+$assert( array( Simple_Redis_Cache_Page_Invalidator::class, 'site_changed' ) === $overwrote, 'Replacing a plugin or theme with an uploaded package is not treated as a site change.' );
+$reset();
+Simple_Redis_Cache_Page_Invalidator::site_changed( '/tmp/package.zip', array( 'Name' => 'Some Plugin' ), 'plugin' );
+$assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Replacing a plugin with an uploaded package did not clear the page cache.' );
+Simple_Redis_Cache_Page_Invalidator::flush_site_change();
 foreach ( array( 'wp_update_nav_menu_item', 'activated_plugin', 'deactivated_plugin', 'edit_terms', 'pre_delete_term' ) as $hook ) {
 	$GLOBALS['src_test_actions'] = array();
 	Simple_Redis_Cache_Page_Invalidator::init();
@@ -603,5 +621,178 @@ $purged = (array) Simple_Redis_Cache_Cloudflare::$purged;
 $assert( in_array( 'https://example.test/category/old-slug/', $purged, true ), 'The pre-rename address of a term archive was not purged from Cloudflare.' );
 $assert( in_array( 'https://example.test/category/new-slug/', $purged, true ), 'The new address of a renamed term archive was not purged from Cloudflare.' );
 unset( $GLOBALS['src_test_config']['cloudflare'], $GLOBALS['src_test_term_link'] );
+
+/* ---- Terms removed with wp_remove_object_terms() (#8514) ----------------- */
+
+$GLOBALS['src_test_actions'] = array();
+Simple_Redis_Cache_Page_Invalidator::init();
+$assert( 3 === ( $GLOBALS['src_test_actions']['deleted_term_relationships'][0][2] ?? null ), 'The deleted_term_relationships hook was not registered with its three arguments.' );
+
+$sorted = static function ( string $type ): array {
+	$ids = (array) ( Simple_Redis_Cache_Redis::$invalidated[ $type ] ?? array() );
+	sort( $ids, SORT_NUMERIC );
+	return $ids;
+};
+$GLOBALS['src_test_post_status'] = 'publish';
+
+// Removing a category from a published post: the post with its translations, the
+// archive it left (112, not among its current terms) and that archive's parent.
+$reset();
+Simple_Redis_Cache_Redis::$calls = 0;
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 112 ), 'category' );
+$assert( isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Removing a term from a published post scheduled no invalidation.' );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( array( 1, 2, 3 ) === $sorted( 'post' ), 'Removing a term did not invalidate the post and its translations.' );
+$assert( in_array( 112, $sorted( 'term' ), true ), 'Removing a term did not invalidate the archive the post left.' );
+$assert( in_array( 100, $sorted( 'term' ), true ), 'Removing a term did not invalidate the parent of the archive the post left.' );
+$assert( ! in_array( 911, $sorted( 'term' ), true ), 'Removing a term invalidated a non-viewable taxonomy archive.' );
+
+// The edge copies go too.
+$reset();
+$GLOBALS['src_test_config']['cloudflare'] = array( 'purge_on_post_update' => true );
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 112 ), 'category' );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$purged = (array) Simple_Redis_Cache_Cloudflare::$purged;
+$assert( in_array( 'https://example.test/term-112/', $purged, true ), 'The archive a post left was not purged from Cloudflare.' );
+$assert( in_array( 'https://example.test/post-1/', $purged, true ), 'The post whose term was removed was not purged from Cloudflare.' );
+unset( $GLOBALS['src_test_config']['cloudflare'] );
+
+// wp_set_object_terms() removes terms through wp_remove_object_terms() and then
+// fires set_object_terms: still exactly one bump, of exactly the same resources.
+$reset();
+Simple_Redis_Cache_Redis::$calls = 0;
+Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 112 ), 'category', false, array( 111 ) );
+Simple_Redis_Cache_Page_Invalidator::flush();
+$set_only = Simple_Redis_Cache_Redis::$invalidated;
+$reset();
+Simple_Redis_Cache_Redis::$calls = 0;
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 111 ), 'category' );
+Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 112 ), 'category', false, array( 111 ) );
+$assert( 1 === count( $GLOBALS['src_test_actions']['shutdown'] ?? array() ), 'Removing and setting terms in one call scheduled more than one flush.' );
+Simple_Redis_Cache_Page_Invalidator::flush();
+Simple_Redis_Cache_Page_Invalidator::flush();
+$assert( 1 === Simple_Redis_Cache_Redis::$calls, 'Removing and setting terms in one call bumped the versions more than once.' );
+$both = Simple_Redis_Cache_Redis::$invalidated;
+foreach ( array( 'post', 'term' ) as $type ) {
+	sort( $set_only[ $type ], SORT_NUMERIC );
+	sort( $both[ $type ], SORT_NUMERIC );
+}
+$assert( $set_only === $both, 'Removing terms before set_object_terms changed what was invalidated.' );
+
+// A draft or a trashed post was in no public archive; another object type's
+// taxonomy and a non-viewable taxonomy are not post archives at all.
+$reset();
+$GLOBALS['src_test_post_status'] = 'trash';
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 112 ), 'category' );
+$GLOBALS['src_test_post_status'] = 'publish';
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 500 ), 'profile' );
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 911 ), 'internal' );
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Removing terms from a non-public post, another object type or a hidden taxonomy scheduled an invalidation.' );
+
+// The taxonomy option governs this exactly as it governs set_object_terms.
+$reset();
+$GLOBALS['src_test_config']['page']['invalidate_term_archives_on_post_update'] = false;
+Simple_Redis_Cache_Page_Invalidator::term_relationships_deleted( 1, array( 112 ), 'category' );
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Removing a term invalidated archives with the taxonomy option off.' );
+$GLOBALS['src_test_config']['page']['invalidate_term_archives_on_post_update'] = true;
+
+/* ---- purge_post_now(): one post on request (the flush-post ability) -------- */
+
+$sorted = static function ( array $values ): array {
+	$values = array_map( 'intval', $values );
+	sort( $values );
+	return $values;
+};
+$GLOBALS['src_test_config']['page']       = array(
+	'enabled'                                 => true,
+	'invalidate_on_post_update'               => true,
+	'invalidate_term_archives_on_post_update' => true,
+	'invalidate_listings_on_post_update'      => true,
+	'purge_on_site_change'                    => true,
+);
+$GLOBALS['src_test_config']['cloudflare'] = array();
+$GLOBALS['src_test_post_status']          = 'publish';
+
+// Just the post and its translations, right away, with nothing left queued.
+$reset();
+$result = Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1 );
+$assert( is_array( $result ) && 'cleared' === $result['page_cache'], 'Clearing one post did not report the page cache as cleared.' );
+$assert( array( 1, 2, 3 ) === $sorted( Simple_Redis_Cache_Redis::$invalidated['post'] ?? array() ), 'Clearing one post did not invalidate it with all its translations.' );
+$assert( ! isset( Simple_Redis_Cache_Redis::$invalidated['term'] ) && ! isset( Simple_Redis_Cache_Redis::$invalidated['list'] ), 'Clearing one post without related pages invalidated archives or listings.' );
+$assert( ! isset( $GLOBALS['src_test_actions']['shutdown'] ), 'Clearing one post deferred work to shutdown instead of doing it now.' );
+$assert( null === Simple_Redis_Cache_Cloudflare::$purged && str_starts_with( (string) $result['cloudflare'], 'not purged' ), 'Clearing one post purged Cloudflare although post-update purging is off.' );
+
+// With related pages: the current term archives and the listing token as well,
+// without disturbing terms this request had already queued.
+$reset();
+Simple_Redis_Cache_Page_Invalidator::set_object_terms( 1, array(), array( 112 ), 'category', false, array( 111 ) );
+$queued_terms = ( new ReflectionProperty( Simple_Redis_Cache_Page_Invalidator::class, 'pending_term_taxonomy_ids' ) )->getValue();
+$result       = Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1, true );
+$assert( array( 1 ) === ( Simple_Redis_Cache_Redis::$invalidated['list'] ?? null ), 'Clearing a post with related pages did not invalidate the listing pages.' );
+$assert( in_array( 111, Simple_Redis_Cache_Redis::$invalidated['term'] ?? array(), true ) && in_array( 100, Simple_Redis_Cache_Redis::$invalidated['term'] ?? array(), true ), 'Clearing a post with related pages did not invalidate its current term archives and their parents.' );
+$assert( $queued_terms === ( new ReflectionProperty( Simple_Redis_Cache_Page_Invalidator::class, 'pending_term_taxonomy_ids' ) )->getValue(), 'Clearing one post changed the term archives this request had queued.' );
+$assert( true === $result['listing_pages'] && $result['term_archives'] > 0, 'The result did not say which related pages were cleared.' );
+Simple_Redis_Cache_Page_Invalidator::flush();
+
+// Related pages follow the settings that tie pages to them.
+$reset();
+$GLOBALS['src_test_config']['page']['invalidate_term_archives_on_post_update'] = false;
+$GLOBALS['src_test_config']['page']['invalidate_listings_on_post_update']      = false;
+Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1, true );
+$assert( ! isset( Simple_Redis_Cache_Redis::$invalidated['term'] ) && ! isset( Simple_Redis_Cache_Redis::$invalidated['list'] ), 'Clearing related pages bumped tokens no cached page is tied to.' );
+$GLOBALS['src_test_config']['page']['invalidate_term_archives_on_post_update'] = true;
+$GLOBALS['src_test_config']['page']['invalidate_listings_on_post_update']      = true;
+
+// Cloudflare gets the same addresses, after Redis.
+$reset();
+$GLOBALS['src_test_config']['cloudflare'] = array( 'purge_on_post_update' => true );
+$result = Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1 );
+$assert( 'purged' === $result['cloudflare'] && in_array( 'https://example.test/post-1/', Simple_Redis_Cache_Cloudflare::$purged ?? array(), true ), 'Clearing one post did not purge its address at Cloudflare.' );
+$reset();
+Simple_Redis_Cache_Redis::$fail = true;
+$result = Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1 );
+$assert( is_wp_error( $result ) && null === Simple_Redis_Cache_Cloudflare::$purged, 'A failed Redis invalidation still purged the edge or reported success.' );
+$reset();
+Simple_Redis_Cache_Cloudflare::$fail = true;
+$result                              = Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1 );
+Simple_Redis_Cache_Cloudflare::$fail = false;
+$assert( is_array( $result ) && 'cleared' === $result['page_cache'] && str_starts_with( (string) $result['cloudflare'], 'purge failed' ), 'A Cloudflare failure hid the successful local clear or was not reported.' );
+
+// An edge-only site purges just the addresses.
+$reset();
+$GLOBALS['src_test_config']['page']['enabled'] = false;
+$result = Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1 );
+$assert( is_array( $result ) && 'not enabled' === $result['page_cache'] && 0 === count( Simple_Redis_Cache_Redis::$invalidated ) && null !== Simple_Redis_Cache_Cloudflare::$purged, 'An edge-only site did not purge just the Cloudflare addresses.' );
+$GLOBALS['src_test_config']['cloudflare'] = array();
+$reset();
+$assert( is_wp_error( Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1 ) ), 'Clearing a post with neither the page cache nor Cloudflare purging reported success.' );
+$GLOBALS['src_test_config']['page']['enabled'] = true;
+
+// Pages not tied to posts cannot be cleared one by one: say so instead of pretending.
+$reset();
+$GLOBALS['src_test_config']['page']['invalidate_on_post_update'] = false;
+$result = Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1 );
+$assert( is_wp_error( $result ) && 0 === count( Simple_Redis_Cache_Redis::$invalidated ), 'Clearing one post with per-post invalidation off bumped a token no page checks, or reported success.' );
+$GLOBALS['src_test_config']['page']['invalidate_on_post_update'] = true;
+
+// A draft has no cached page; clearing it must not let an author bust site-wide caches.
+$reset();
+$GLOBALS['src_test_config']['cloudflare'] = array( 'purge_on_post_update' => true );
+$GLOBALS['src_test_post_status']          = 'draft';
+$result                                   = Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1, true );
+$GLOBALS['src_test_post_status']          = 'publish';
+$GLOBALS['src_test_config']['cloudflare'] = array();
+$assert( is_wp_error( $result ) && 0 === count( Simple_Redis_Cache_Redis::$invalidated ) && null === Simple_Redis_Cache_Cloudflare::$purged, 'Clearing a draft bumped listings or purged edge URLs.' );
+
+// Nothing to clear for a missing post, a revision or a type without public pages,
+// and never anything on settings copied from another site.
+foreach ( array( 0 => 'a missing post', -3 => 'a negative ID' ) as $missing_id => $label ) {
+	$reset();
+	$assert( is_wp_error( Simple_Redis_Cache_Page_Invalidator::purge_post_now( $missing_id ) ) && 0 === count( Simple_Redis_Cache_Redis::$invalidated ), "Clearing {$label} did not fail cleanly." );
+}
+$reset();
+$GLOBALS['src_test_foreign'] = true;
+$assert( is_wp_error( Simple_Redis_Cache_Page_Invalidator::purge_post_now( 1 ) ) && 0 === count( Simple_Redis_Cache_Redis::$invalidated ), 'Settings copied from another site cleared a post.' );
+$GLOBALS['src_test_foreign'] = false;
 
 echo "OK: content, listing, term and site changes invalidate the right pages while failing open.\n";

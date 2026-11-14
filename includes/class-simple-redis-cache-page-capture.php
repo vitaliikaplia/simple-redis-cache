@@ -21,6 +21,15 @@ final class Simple_Redis_Cache_Page_Capture {
 	 */
 	private const MAX_VARIANTS_PER_URL = 16;
 
+	/**
+	 * Distinct nonces whose presence in the HTML is checked one by one. A render
+	 * that creates more is treated as if every one of them were printed.
+	 */
+	private const MAX_TRACKED_NONCES = 256;
+
+	/** Seconds kept in reserve before a nonce's guaranteed lifetime ends. */
+	private const NONCE_SAFETY_MARGIN = 60;
+
 	/** @var array<string, mixed> */
 	private array $context;
 	/** @var array<string, mixed> */
@@ -33,6 +42,14 @@ final class Simple_Redis_Cache_Page_Capture {
 	private array $content_resources = array();
 	/** Whether the vary-cookie values name one of the site's languages; null until checked. */
 	private ?bool $vary_values_known = null;
+	/** @var array<string, int> Nonce => last moment it is certain to verify, as created during this render. */
+	private array $nonces = array();
+	/** Earliest such moment over every nonce this render created; null when it created none. */
+	private ?int $nonce_floor = null;
+	/** Whether presence in the HTML cannot be relied on, so every nonce counts as printed. */
+	private bool $nonce_uncertain = false;
+	/** Set while this capture creates a nonce itself, so its own filter ignores that call. */
+	private bool $computing_nonce = false;
 
 	/** @param array<string, mixed> $context */
 	private function __construct( array $context ) {
@@ -80,6 +97,21 @@ final class Simple_Redis_Cache_Page_Capture {
 				$capture->prepare_vary_values();
 			} elseif ( function_exists( 'add_action' ) ) {
 				add_action( 'wp', array( $capture, 'prepare_vary_values' ), PHP_INT_MAX );
+			}
+		}
+
+		/*
+		 * Every guest nonce has the same value for all visitors, and core asks the
+		 * first filter each time one is created for a visitor who is not logged in. A
+		 * logged-in render has nonces of its own session (the toolbar's log-out link
+		 * always carries one); core asks nonce_life, with the action, for each of them.
+		 */
+		if ( function_exists( 'add_filter' ) ) {
+			if ( empty( $context['deferred_logged_in'] ) ) {
+				add_filter( 'nonce_user_logged_out', array( $capture, 'record_guest_nonce' ), PHP_INT_MAX, 2 );
+			} else {
+				$capture->take_over_early_nonces();
+				add_filter( 'nonce_life', array( $capture, 'record_session_nonce' ), PHP_INT_MAX, 2 );
 			}
 		}
 
@@ -196,6 +228,143 @@ final class Simple_Redis_Cache_Page_Capture {
 		}
 	}
 
+	/**
+	 * Note a nonce created for a visitor who is not logged in.
+	 *
+	 * A guest nonce is the same for every visitor and verifies for only one to two
+	 * ticks of nonce_life / 2 — half a day to a day by default — while a cached page
+	 * can live for days, after which its forms and AJAX calls fail. Core applies
+	 * this filter inside wp_create_nonce() (and wp_verify_nonce()) for guests; the
+	 * same nonce is created here once more, while the page renders, so that the
+	 * output handler only has to look for it in the HTML. Third-party code (the
+	 * nonce filters, a pluggable wp_create_nonce) never runs inside that handler.
+	 * Core creates a wp_rest nonce on most renders without printing it, which is
+	 * why only a nonce that actually appears in the page limits its lifetime.
+	 *
+	 * @param mixed $uid    The user ID core will hash; returned unchanged.
+	 * @param mixed $action The nonce action.
+	 * @return mixed
+	 */
+	public function record_guest_nonce( mixed $uid, mixed $action = -1 ): mixed {
+		if ( ! $this->computing_nonce ) {
+			$this->record_nonce( $action, null );
+		}
+
+		return $uid;
+	}
+
+	/**
+	 * Note a nonce created for the logged-in visitor whose page is being captured.
+	 *
+	 * Such a nonce is tied to the session and verifies for the same one to two
+	 * ticks, while a cached logged-in page can live as long as any other. Core
+	 * applies nonce_life inside wp_nonce_tick() for every nonce it creates or
+	 * verifies; at PHP_INT_MAX this sees the lifetime every other filter settled on.
+	 *
+	 * @param mixed $life   Seconds; returned unchanged.
+	 * @param mixed $action The nonce action.
+	 * @return mixed
+	 */
+	public function record_session_nonce( mixed $life, mixed $action = -1 ): mixed {
+		if ( ! $this->computing_nonce && is_numeric( $life ) ) {
+			$this->record_nonce( $action, (int) $life );
+		}
+
+		return $life;
+	}
+
+	/**
+	 * Account for the nonces the logged-in request created before this capture
+	 * started, as noted by the loader since wp_cache_postload. The nonce is created
+	 * again now, as the same user; one seen in another nonce tick than now, or too
+	 * many to track, counts as printed.
+	 */
+	private function take_over_early_nonces(): void {
+		if ( function_exists( 'remove_filter' ) ) {
+			remove_filter( 'nonce_life', array( Simple_Redis_Cache_Advanced_Cache_Loader::class, 'note_early_nonce' ), PHP_INT_MAX );
+		}
+
+		$early = Simple_Redis_Cache_Advanced_Cache_Loader::$early_nonces;
+		Simple_Redis_Cache_Advanced_Cache_Loader::$early_nonces = array();
+		if ( null === $early ) {
+			$this->nonce_uncertain = true;
+			$life                  = function_exists( 'apply_filters' ) ? (int) apply_filters( 'nonce_life', DAY_IN_SECONDS ) : DAY_IN_SECONDS;
+			$this->nonce_floor     = time() + intdiv( max( 0, $life ), 2 ) - self::NONCE_SAFETY_MARGIN;
+			return;
+		}
+
+		foreach ( $early as $seen ) {
+			$this->record_nonce( $seen['action'], $seen['life'], $seen['at'] );
+		}
+	}
+
+	/**
+	 * Create the nonce for $action once more, as the current visitor, and remember
+	 * until when it is certain to verify. $life is the filtered nonce_life when the
+	 * caller already knows it; $created_at when the page created it earlier.
+	 */
+	private function record_nonce( mixed $action, ?int $life, ?int $created_at = null ): void {
+		if ( $this->finalized || ! function_exists( 'wp_create_nonce' ) || ( ! is_string( $action ) && ! is_int( $action ) ) ) {
+			return;
+		}
+
+		$this->computing_nonce = true;
+		try {
+			$now  = min( time(), $created_at ?? PHP_INT_MAX );
+			$life = $life ?? ( function_exists( 'apply_filters' ) ? (int) apply_filters( 'nonce_life', DAY_IN_SECONDS, $action ) : DAY_IN_SECONDS );
+
+			// A nonce created now still verifies nonce_life / 2 seconds later, whatever its tick.
+			$valid_until       = $now + intdiv( max( 0, $life ), 2 ) - self::NONCE_SAFETY_MARGIN;
+			$this->nonce_floor = null === $this->nonce_floor ? $valid_until : min( $this->nonce_floor, $valid_until );
+
+			/*
+			 * Core's tick is ceil( time / ( nonce_life / 2 ) ). On a tick boundary the copy
+			 * made here could belong to the other tick than the nonce the page prints and
+			 * would not be found in it, so then every nonce counts as printed.
+			 */
+			$half = $life / 2;
+			// The copy below is made now: it matches only a nonce from the same tick.
+			if ( $half <= 0 || ceil( $now / $half ) !== ceil( ( time() + 2 ) / $half ) || count( $this->nonces ) >= self::MAX_TRACKED_NONCES ) {
+				$this->nonce_uncertain = true;
+				return;
+			}
+
+			$nonce = wp_create_nonce( $action );
+			if ( ! is_string( $nonce ) || '' === $nonce ) {
+				$this->nonce_uncertain = true;
+			} elseif ( ! isset( $this->nonces[ $nonce ] ) ) {
+				$this->nonces[ $nonce ] = $valid_until;
+			}
+		} catch ( Throwable ) {
+			$this->nonce_uncertain = true;
+		} finally {
+			$this->computing_nonce = false;
+		}
+	}
+
+	/**
+	 * The last moment every nonce printed in this page is certain to verify,
+	 * or null when the page prints none. Plain string work: this runs inside the
+	 * output handler.
+	 */
+	private function nonce_valid_until( string $body ): ?int {
+		if ( null === $this->nonce_floor ) {
+			return null;
+		}
+		if ( $this->nonce_uncertain ) {
+			return $this->nonce_floor;
+		}
+
+		$valid_until = null;
+		foreach ( $this->nonces as $nonce => $nonce_valid_until ) {
+			if ( str_contains( $body, (string) $nonce ) ) {
+				$valid_until = null === $valid_until ? $nonce_valid_until : min( $valid_until, $nonce_valid_until );
+			}
+		}
+
+		return $valid_until;
+	}
+
 	private function maybe_store( string $body ): void {
 		if (
 			( function_exists( 'is_multisite' ) && is_multisite() ) ||
@@ -298,6 +467,16 @@ final class Simple_Redis_Cache_Page_Capture {
 		}
 
 		/*
+		 * A page printing a nonce is kept, in Redis and at the edge, only as long
+		 * as that nonce is certain to verify. A page whose nonce could not live long
+		 * enough to be worth caching is not stored.
+		 */
+		$valid_until = $this->nonce_valid_until( $body );
+		if ( null !== $valid_until && $valid_until - time() < 1 ) {
+			return;
+		}
+
+		/*
 		 * Compress the body when it helps: a rendered page shrinks several-fold, and
 		 * every anonymous 404, search and vary variant is a full page in memory.
 		 */
@@ -311,18 +490,21 @@ final class Simple_Redis_Cache_Page_Capture {
 			}
 		}
 
-		$serialized = serialize(
-			array(
-				'version'   => 4,
-				'status'    => $status,
-				'type'      => $type,
-				'headers'   => $headers,
-				'body'      => $stored_body,
-				'encoding'  => $encoding,
-				'stored_at' => time(),
-				'resources' => $resources,
-			)
+		$fields = array(
+			'version'   => 4,
+			'status'    => $status,
+			'type'      => $type,
+			'headers'   => $headers,
+			'body'      => $stored_body,
+			'encoding'  => $encoding,
+			'stored_at' => time(),
+			'resources' => $resources,
 		);
+		// Optional within v4: a reader that predates it serves the page until its Redis TTL.
+		if ( null !== $valid_until ) {
+			$fields['valid_until'] = $valid_until;
+		}
+		$serialized = serialize( $fields );
 
 		$config     = (array) ( $this->context['config'] ?? array() );
 		$cache_key  = (string) ( $this->context['cache_key'] ?? '' );
@@ -342,6 +524,9 @@ final class Simple_Redis_Cache_Page_Capture {
 		$ttl = min( 31 * DAY_IN_SECONDS, max( 1, (int) ( $this->page_config['ttl'] ?? HOUR_IN_SECONDS ) ) );
 		if ( in_array( $type, array( '404', 'search' ), true ) ) {
 			$ttl = min( $ttl, Simple_Redis_Cache_Early_Config::SHORT_PAGE_TTL );
+		}
+		if ( null !== $valid_until ) {
+			$ttl = min( $ttl, max( 1, $valid_until - time() ) );
 		}
 
 		/*

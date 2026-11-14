@@ -425,6 +425,79 @@ final class Simple_Redis_Cache_Redis {
 		}
 	}
 
+	/**
+	 * Read several generations in one round trip, creating any that are missing
+	 * the way generation() does, in one more. Null, with error() set, when any
+	 * of them could not be read: unlike generation(), no placeholder is returned.
+	 *
+	 * @param string[] $namespaces
+	 * @return array<string, int>|null Generation by namespace.
+	 */
+	public function generations( array $namespaces ): ?array {
+		$this->begin_operation();
+		$client = $this->client();
+		if ( null === $client ) {
+			return null;
+		}
+
+		$namespaces = array_values( array_unique( array_map( 'strval', $namespaces ) ) );
+		$keys       = array();
+		foreach ( $namespaces as $namespace ) {
+			$keys[] = Simple_Redis_Cache_Early_Config::meta_key( $namespace . '-generation', $this->all_config );
+		}
+		if ( array() === $keys ) {
+			return array();
+		}
+
+		try {
+			$values = $client->mget( $keys );
+			if ( ! is_array( $values ) || count( $values ) !== count( $keys ) ) {
+				throw new RuntimeException( 'Redis returned an invalid cache generation.' );
+			}
+			$values  = array_values( $values );
+			$missing = array_keys( $values, false, true );
+
+			if ( array() !== $missing ) {
+				// NX keeps a generation another request created meanwhile; GET reads the winner.
+				$client->multi( Redis::PIPELINE );
+				foreach ( $missing as $index ) {
+					$client->set( $keys[ $index ], (string) self::new_generation(), array( 'nx' ) );
+					$client->get( $keys[ $index ] );
+				}
+				$replies = $client->exec();
+				if ( ! is_array( $replies ) || count( $replies ) !== 2 * count( $missing ) ) {
+					throw new RuntimeException( 'Redis returned an invalid cache generation.' );
+				}
+				$replies = array_values( $replies );
+				foreach ( $missing as $position => $index ) {
+					$values[ $index ] = $replies[ 2 * $position + 1 ];
+				}
+			}
+
+			$generations = array();
+			foreach ( $namespaces as $index => $namespace ) {
+				$generation = self::parse_generation( $values[ $index ] );
+				if ( null === $generation ) {
+					throw new RuntimeException( 'Redis returned an invalid cache generation.' );
+				}
+				$generations[ $namespace ] = $generation;
+			}
+
+			return $generations;
+		} catch ( Throwable $throwable ) {
+			try {
+				// Queued commands must not leak into the next call on this connection.
+				if ( Redis::PIPELINE === $client->getMode() ) {
+					$client->discard();
+				}
+			} catch ( Throwable ) {
+				// The connection reports its own failure on the next command.
+			}
+			$this->error = $throwable->getMessage();
+			return null;
+		}
+	}
+
 	public function bump_generation( string $namespace ): int|false {
 		$this->begin_operation();
 		$client = $this->client();

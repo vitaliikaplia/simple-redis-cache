@@ -69,6 +69,24 @@ class WP_Object_Cache {
 	private array $group_generations = array();
 
 	/**
+	 * What get_multiple() read from Redis in one round trip, for the get() calls
+	 * it then makes: group => key => read_redis() result. Each entry is used once.
+	 *
+	 * @var array<string, array<int|string, array{found: bool, value: mixed, ttl: int}>>
+	 */
+	private array $prefetched = array();
+
+	/**
+	 * The notoptions list as this request last synchronized it with Redis (read
+	 * or written); null for none. A write merges only the changes made since,
+	 * so a list read early in a long request cannot bring back options another
+	 * request created meanwhile.
+	 *
+	 * @var array<int|string, mixed>|null
+	 */
+	private ?array $notoptions_base = null;
+
+	/**
 	 * Marker file left when persistent data changed while Redis could not take
 	 * the change. The next request that reaches Redis invalidates the object
 	 * namespace and removes it. An empty path disables the marker.
@@ -109,6 +127,7 @@ class WP_Object_Cache {
 	 * @param mixed      $data
 	 */
 	public function add( $key, $data, $group = 'default', $expire = 0 ) {
+		$this->forget_prefetch();
 		if ( function_exists( 'wp_suspend_cache_addition' ) && wp_suspend_cache_addition() ) {
 			return false;
 		}
@@ -163,12 +182,14 @@ class WP_Object_Cache {
 			if ( false === $stored ) {
 				if ( ! $this->can_read_persistent_key( $key, $group ) && false !== $this->encode( $data ) ) {
 					$this->put_runtime( $key, $group, $data, $ttl );
+					$this->settle_notoptions( $key, $group, $data );
 				}
 				return false;
 			}
 		}
 
 		$this->put_runtime( $key, $group, $data, $ttl );
+		$this->settle_notoptions( $key, $group, $data );
 		if ( $this->uses_db_fallback( $group ) ) {
 			$this->write_db_transient( $key, $group, $data, $ttl );
 		}
@@ -176,12 +197,73 @@ class WP_Object_Cache {
 		return true;
 	}
 
-	/** @return bool[] */
+	/**
+	 * add() for many keys, with their Redis writes sent as one pipeline: SET NX
+	 * for all of them, then a single EXISTS round trip for any it refused. Each
+	 * key gets exactly the answer, L1 entry and fail-open behaviour add() gives.
+	 *
+	 * @return bool[]
+	 */
 	public function add_multiple( array $data, $group = '', $expire = 0 ) {
-		$results = array();
-		foreach ( $data as $key => $value ) {
-			$results[ $key ] = $this->add( $key, $value, $group, $expire );
+		$this->forget_prefetch();
+		$group = $this->normalize_group( $group );
+
+		// The database mirror reads and rewarms key by key; nothing to batch elsewhere.
+		if ( count( $data ) < 2 || ! $this->is_persistent_group( $group ) || $this->uses_db_fallback( $group ) ) {
+			$results = array();
+			foreach ( $data as $key => $value ) {
+				$results[ $key ] = $this->add( $key, $value, $group, $expire );
+			}
+			return $results;
 		}
+
+		if ( function_exists( 'wp_suspend_cache_addition' ) && wp_suspend_cache_addition() ) {
+			return array_fill_keys( array_keys( $data ), false );
+		}
+
+		$ttl      = $this->normalize_ttl( $expire );
+		$results  = array();
+		$values   = array();
+		$payloads = array();
+		foreach ( $data as $key => $value ) {
+			$results[ $key ] = false;
+			if ( ! $this->is_valid_key( $key ) ) {
+				continue;
+			}
+
+			$name = (string) $key;
+			if ( $this->runtime_exists( $name, $group ) ) {
+				continue;
+			}
+
+			if ( ! $this->is_persistent_key( $name, $group ) || $this->is_notoptions( $name, $group ) ) {
+				$results[ $key ] = $this->add( $key, $value, $group, $expire );
+				continue;
+			}
+
+			// A value that cannot be serialized is refused and never kept, as in add().
+			$payload = $this->encode( $value );
+			if ( false !== $payload ) {
+				$values[ $name ]   = $value;
+				$payloads[ $name ] = $payload;
+			}
+		}
+
+		foreach ( $this->add_redis_many( $group, $payloads, $ttl ) as $name => $stored ) {
+			$name = (string) $name;
+			if ( false === $stored ) {
+				// Refused by NX; see add() for why wp-admin may still keep its copy.
+				if ( ! $this->can_read_persistent_key( $name, $group ) ) {
+					$this->put_runtime( $name, $group, $values[ $name ], $ttl );
+				}
+				continue;
+			}
+
+			// Stored, or Redis is unavailable and add() fails open.
+			$this->put_runtime( $name, $group, $values[ $name ], $ttl );
+			$results[ $name ] = true;
+		}
+
 		return $results;
 	}
 
@@ -192,6 +274,7 @@ class WP_Object_Cache {
 	 * @param mixed      $data
 	 */
 	public function replace( $key, $data, $group = 'default', $expire = 0 ) {
+		$this->forget_prefetch();
 		if ( ! $this->is_valid_key( $key ) ) {
 			return false;
 		}
@@ -222,7 +305,8 @@ class WP_Object_Cache {
 
 		// Redis XX keeps replace atomic across requests. A GET followed by SET could
 		// otherwise recreate an entry deleted by another request between the calls.
-		$stored   = $this->store_redis( $key, $group, $data, $ttl, false, true );
+		$scrubbed = false;
+		$stored   = $this->store_redis( $key, $group, $data, $ttl, false, true, $scrubbed );
 		$db_value = null;
 
 		if ( false === $stored && $this->uses_db_fallback( $group ) ) {
@@ -231,12 +315,13 @@ class WP_Object_Cache {
 				$rewarmed = $this->store_redis( $key, $group, $db_value['value'], $db_value['ttl'], true );
 				$stored   = null === $rewarmed
 					? null
-					: $this->store_redis( $key, $group, $data, $ttl, false, true );
+					: $this->store_redis( $key, $group, $data, $ttl, false, true, $scrubbed );
 			}
 		}
 
 		if ( true === $stored ) {
 			$this->put_runtime( $key, $group, $data, $ttl );
+			$this->settle_notoptions( $key, $group, $data );
 			if ( $this->uses_db_fallback( $group ) ) {
 				$this->write_db_transient( $key, $group, $data, $ttl );
 			}
@@ -244,8 +329,11 @@ class WP_Object_Cache {
 		}
 
 		if ( null === $stored ) {
-			// Whatever this call returns, Redis may still hold the value it replaces.
-			$this->mark_dirty();
+			// Whatever this call returns, Redis may still hold the value it replaces,
+			// unless the refused write could at least delete it.
+			if ( ! $scrubbed ) {
+				$this->mark_dirty();
+			}
 
 			if ( ! $runtime_found && $this->uses_db_fallback( $group ) ) {
 				$db_value = is_array( $db_value ) ? $db_value : $this->read_db_transient( $key, $group );
@@ -277,6 +365,7 @@ class WP_Object_Cache {
 	 * @param mixed      $data
 	 */
 	public function set( $key, $data, $group = 'default', $expire = 0 ) {
+		$this->forget_prefetch();
 		if ( ! $this->is_valid_key( $key ) ) {
 			return false;
 		}
@@ -288,17 +377,24 @@ class WP_Object_Cache {
 		$this->put_runtime( $key, $group, $data, $ttl );
 
 		if ( $this->is_persistent_key( $key, $group ) ) {
-			$stored = $this->store_redis( $key, $group, $data, $ttl );
+			$scrubbed = false;
+			if ( $this->is_notoptions( $key, $group ) && is_array( $data ) ) {
+				$stored = $this->store_notoptions( $data, $ttl, $scrubbed );
+			} else {
+				$stored = $this->store_redis( $key, $group, $data, $ttl, false, false, $scrubbed );
+				$this->settle_notoptions( $key, $group, $data );
+			}
 
 			/*
 			 * A plain SET is refused only for a value that cannot be serialized. It
 			 * never reaches Redis, so the previous copy must go, or later requests
 			 * would keep reading it; a DEL that cannot be done marks the cache dirty.
+			 * So does a write Redis failed, unless it could still delete the old copy.
 			 */
 			if ( false === $stored ) {
 				$stored = $this->delete_redis( $key, $group );
 			}
-			if ( null === $stored ) {
+			if ( null === $stored && ! $scrubbed ) {
 				$this->mark_dirty();
 			}
 		}
@@ -311,12 +407,65 @@ class WP_Object_Cache {
 		return true;
 	}
 
-	/** @return bool[] */
+	/**
+	 * set() for many keys, with their Redis writes sent as one pipeline. L1, the
+	 * dirty marker and the database mirror end up exactly as set() leaves them.
+	 *
+	 * @return bool[]
+	 */
 	public function set_multiple( array $data, $group = '', $expire = 0 ) {
-		$results = array();
+		$this->forget_prefetch();
+		$group = $this->normalize_group( $group );
+
+		if ( count( $data ) < 2 || ! $this->is_persistent_group( $group ) ) {
+			$results = array();
+			foreach ( $data as $key => $value ) {
+				$results[ $key ] = $this->set( $key, $value, $group, $expire );
+			}
+			return $results;
+		}
+
+		$ttl      = $this->normalize_ttl( $expire );
+		$results  = array();
+		$payloads = array();
+		$merged   = array();
 		foreach ( $data as $key => $value ) {
+			$results[ $key ] = false;
+			if ( ! $this->is_valid_key( $key ) ) {
+				continue;
+			}
+
+			$name = (string) $key;
+			if ( $this->is_notoptions( $name, $group ) ) {
+				// Merged with the current Redis copy by set(), after the batch.
+				$merged[ $key ] = $value;
+				continue;
+			}
+
+			$this->put_runtime( $name, $group, $value, $ttl );
+			$results[ $key ] = true;
+			if ( $this->is_persistent_key( $name, $group ) ) {
+				// False queues a DEL instead: see set() for an unserializable value.
+				$payloads[ $name ] = $this->encode( $value );
+			}
+		}
+
+		if ( in_array( null, $this->write_redis_many( $group, $payloads, $ttl ), true ) ) {
+			$this->mark_dirty();
+		}
+
+		if ( $this->uses_db_fallback( $group ) ) {
+			foreach ( $data as $key => $value ) {
+				if ( true === $results[ $key ] && ! $this->write_db_transient( (string) $key, $group, $value, $ttl ) ) {
+					$this->delete_db_transient( (string) $key, $group );
+				}
+			}
+		}
+
+		foreach ( $merged as $key => $value ) {
 			$results[ $key ] = $this->set( $key, $value, $group, $expire );
 		}
+
 		return $results;
 	}
 
@@ -399,13 +548,43 @@ class WP_Object_Cache {
 		return false;
 	}
 
-	/** @return array<int|string, mixed> */
+	/**
+	 * get() for many keys. What get() would read from Redis one key at a time is
+	 * read first in one round trip; each get() then takes its key's reply from
+	 * there, so the answer, L1 and database fallbacks are exactly get()'s.
+	 *
+	 * @return array<int|string, mixed>
+	 */
 	public function get_multiple( $keys, $group = 'default', $force = false ) {
-		$values = array();
-		foreach ( (array) $keys as $key ) {
-			$values[ $key ] = $this->get( $key, $group, $force );
+		$keys = (array) $keys;
+
+		// A nested call, from a hook that a get() below triggers, reads key by key.
+		$owner = array() === $this->prefetched;
+		if ( $owner ) {
+			$this->prefetch( $keys, $this->normalize_group( $group ), (bool) $force );
 		}
+
+		$values = array();
+		try {
+			foreach ( $keys as $key ) {
+				$values[ $key ] = $this->get( $key, $group, $force );
+			}
+		} finally {
+			if ( $owner ) {
+				$this->prefetched = array();
+			}
+		}
+
 		return $values;
+	}
+
+	/**
+	 * Drop the replies get_multiple() read ahead: a change this request makes to
+	 * the cache, from a hook that runs inside one of its get() calls, must not be
+	 * answered by a value read before that change.
+	 */
+	private function forget_prefetch(): void {
+		$this->prefetched = array();
 	}
 
 	/**
@@ -414,6 +593,7 @@ class WP_Object_Cache {
 	 * @param int|string $key
 	 */
 	public function delete( $key, $group = 'default', $deprecated = false ) {
+		$this->forget_prefetch();
 		if ( ! $this->is_valid_key( $key ) ) {
 			return false;
 		}
@@ -421,6 +601,7 @@ class WP_Object_Cache {
 		$group   = $this->normalize_group( $group );
 		$key     = (string) $key;
 		$deleted = $this->remove_runtime( $key, $group );
+		$this->settle_notoptions( $key, $group, null );
 
 		if ( $this->is_persistent_key( $key, $group ) ) {
 			$redis_deleted = $this->delete_redis( $key, $group );
@@ -437,23 +618,73 @@ class WP_Object_Cache {
 		return $deleted;
 	}
 
-	/** @return bool[] */
+	/**
+	 * delete() for many keys, with their Redis DELs sent as one pipeline. Each
+	 * key, repeated ones included, gets the answer delete() would give it.
+	 *
+	 * @return bool[]
+	 */
 	public function delete_multiple( array $keys, $group = '' ) {
-		$results = array();
-		foreach ( $keys as $key ) {
-			$results[ $key ] = $this->delete( $key, $group );
+		$this->forget_prefetch();
+		$group = $this->normalize_group( $group );
+
+		if ( count( $keys ) < 2 || ! $this->is_persistent_group( $group ) ) {
+			$results = array();
+			foreach ( $keys as $key ) {
+				$results[ $key ] = $this->delete( $key, $group );
+			}
+			return $results;
 		}
+
+		$results = array();
+		$pending = array();
+		$names   = array();
+		foreach ( $keys as $key ) {
+			if ( ! $this->is_valid_key( $key ) ) {
+				$results[ $key ] = false;
+				continue;
+			}
+
+			$name              = (string) $key;
+			$index             = count( $pending );
+			$results[ $key ]   = false;
+			$pending[ $index ] = array( $key, $name, $this->remove_runtime( $name, $group ) );
+			$this->settle_notoptions( $name, $group, null );
+			if ( $this->is_persistent_key( $name, $group ) ) {
+				$names[ $index ] = $name;
+			}
+		}
+
+		$outcomes = $this->delete_redis_many( $group, $names );
+		if ( in_array( null, $outcomes, true ) ) {
+			$this->mark_dirty();
+		}
+
+		foreach ( $pending as $index => list( $key, $name, $deleted ) ) {
+			if ( array_key_exists( $index, $outcomes ) ) {
+				$deleted = true === $outcomes[ $index ] || $deleted;
+			}
+			if ( $this->uses_db_fallback( $group ) ) {
+				$deleted = $this->delete_db_transient( $name, $group ) || $deleted;
+			}
+			$results[ $key ] = $deleted;
+		}
+
 		return $results;
 	}
 
 	/** @return int|false */
 	public function incr( $key, $offset = 1, $group = 'default' ) {
-		return $this->change_numeric_value( $key, (int) $offset, $group );
+		$this->forget_prefetch();
+		return $this->change_numeric_value( $key, self::int_value( $offset ), $group );
 	}
 
 	/** @return int|false */
 	public function decr( $key, $offset = 1, $group = 'default' ) {
-		return $this->change_numeric_value( $key, -1 * (int) $offset, $group );
+		$this->forget_prefetch();
+		$offset = self::int_value( $offset );
+		// -PHP_INT_MIN is a float; adding PHP_INT_MAX saturates to the same result.
+		return $this->change_numeric_value( $key, PHP_INT_MIN === $offset ? PHP_INT_MAX : -$offset, $group );
 	}
 
 	/** Alias used by some older object-cache integrations. */
@@ -470,6 +701,7 @@ class WP_Object_Cache {
 	 * Invalidate the full object-cache namespace without touching unrelated Redis keys.
 	 */
 	public function flush() {
+		$this->forget_prefetch();
 		$this->flush_runtime();
 		$redis_ok = true;
 
@@ -502,8 +734,10 @@ class WP_Object_Cache {
 
 	/** Clear only the request-local L1 cache. */
 	public function flush_runtime() {
-		$this->cache       = array();
-		$this->expirations = array();
+		$this->forget_prefetch();
+		$this->cache           = array();
+		$this->expirations     = array();
+		$this->notoptions_base = null;
 		return true;
 	}
 
@@ -511,8 +745,10 @@ class WP_Object_Cache {
 	 * Invalidate one cache group using its generation key.
 	 */
 	public function flush_group( $group ) {
+		$this->forget_prefetch();
 		$group = $this->normalize_group( $group );
 		unset( $this->cache[ $group ], $this->expirations[ $group ] );
+		$this->settle_notoptions( 'notoptions', $group, null );
 
 		$redis_ok = true;
 		if ( $this->is_persistent_group( $group ) ) {
@@ -555,10 +791,12 @@ class WP_Object_Cache {
 	 * asks WordPress to switch blogs, preventing request-local cross-site reuse.
 	 */
 	public function switch_to_blog( $blog_id ) {
+		$this->forget_prefetch();
 		$this->flush_runtime();
 	}
 
 	public function reset() {
+		$this->forget_prefetch();
 		$this->flush_runtime();
 	}
 
@@ -574,9 +812,14 @@ class WP_Object_Cache {
 		echo '<strong>Cache Misses:</strong> ' . $misses . '</p>';
 	}
 
+	/** Whether $key can name a cache entry; is_valid_key() also reports misuse. */
+	private function is_usable_key( $key ): bool {
+		return is_int( $key ) || ( is_string( $key ) && '' !== trim( $key ) );
+	}
+
 	/** @param int|string $key */
 	private function is_valid_key( $key ): bool {
-		if ( is_int( $key ) || ( is_string( $key ) && '' !== trim( $key ) ) ) {
+		if ( $this->is_usable_key( $key ) ) {
 			return true;
 		}
 
@@ -728,49 +971,65 @@ class WP_Object_Cache {
 	}
 
 	private function storage_key( string $key, string $group ): ?string {
-		if ( null === $this->client() ) {
-			return null;
-		}
-
-		$object_generation = $this->get_object_generation();
-		$group_generation  = $this->get_group_generation( $group );
-		if ( null === $object_generation || null === $group_generation ) {
+		if ( null === $this->client() || ! $this->load_generations( array( $group ) ) ) {
 			return null;
 		}
 
 		$digest = hash( 'sha256', $group . "\0" . $key );
-		return $this->prefix . 'object:' . $object_generation . ':' . $group_generation . ':' . $digest;
+		return $this->prefix . 'object:' . $this->object_generation . ':' . $this->group_generations[ $group ] . ':' . $digest;
 	}
 
 	private function get_object_generation(): ?int {
-		if ( null !== $this->object_generation ) {
-			return $this->object_generation;
-		}
-
-		// Never memoize the placeholder generation() returns alongside an error.
-		$generation = $this->redis->generation( 'object' );
-		if ( null !== $this->redis->error() ) {
-			$this->record_redis_error( $this->redis->error() );
-			return null;
-		}
-
-		$this->object_generation = $generation;
-		return $this->object_generation;
+		return $this->load_generations( array() ) ? $this->object_generation : null;
 	}
 
 	private function get_group_generation( string $group ): ?int {
-		if ( isset( $this->group_generations[ $group ] ) ) {
-			return $this->group_generations[ $group ];
+		return $this->load_generations( array( $group ) ) ? $this->group_generations[ $group ] : null;
+	}
+
+	/**
+	 * Make sure the object generation and these groups' generations are known,
+	 * reading every one this request has not read yet in a single round trip.
+	 * Nothing from a failed read is memoized: no placeholder generation can ever
+	 * name a namespace this request then writes to.
+	 *
+	 * @param string[] $groups
+	 */
+	private function load_generations( array $groups ): bool {
+		if ( null === $this->client() ) {
+			return false;
 		}
 
-		$generation = $this->redis->generation( $this->group_generation_namespace( $group ) );
-		if ( null !== $this->redis->error() ) {
-			$this->record_redis_error( $this->redis->error() );
-			return null;
+		$namespaces = array();
+		if ( null === $this->object_generation ) {
+			$namespaces[] = 'object';
+		}
+		$pending = array();
+		foreach ( $groups as $group ) {
+			if ( ! isset( $this->group_generations[ $group ] ) ) {
+				$namespace             = $this->group_generation_namespace( $group );
+				$pending[ $namespace ] = $group;
+				$namespaces[]          = $namespace;
+			}
+		}
+		if ( array() === $namespaces ) {
+			return true;
 		}
 
-		$this->group_generations[ $group ] = $generation;
-		return $generation;
+		$generations = $this->redis->generations( $namespaces );
+		if ( null === $generations || null !== $this->redis->error() ) {
+			$this->record_redis_error( $this->redis->error() ?? 'Redis returned an invalid cache generation.' );
+			return false;
+		}
+
+		if ( isset( $generations['object'] ) ) {
+			$this->object_generation = $generations['object'];
+		}
+		foreach ( $pending as $namespace => $group ) {
+			$this->group_generations[ $group ] = $generations[ $namespace ];
+		}
+
+		return true;
 	}
 
 	private function group_generation_namespace( string $group ): string {
@@ -839,6 +1098,8 @@ class WP_Object_Cache {
 	}
 
 	/**
+	 * @param bool $scrubbed Set when Redis refused a SET or SET XX with an error
+	 *                       reply but then deleted the key: no stale copy is left.
 	 * @return bool|null True when stored, false when NX/XX rejected, null when unavailable.
 	 */
 	private function store_redis(
@@ -847,7 +1108,8 @@ class WP_Object_Cache {
 		$value,
 		int $ttl,
 		bool $only_if_absent = false,
-		bool $only_if_present = false
+		bool $only_if_present = false,
+		bool &$scrubbed = false
 	): ?bool {
 		/*
 		 * A value that cannot be serialized will never reach Redis on any attempt, so
@@ -873,6 +1135,8 @@ class WP_Object_Cache {
 		}
 
 		try {
+			// A reply error() reports from now on belongs to this write.
+			$client->clearLastError();
 			$stored = $client->set( $storage_key, $payload, $options );
 			if ( true === $stored ) {
 				return true;
@@ -886,16 +1150,37 @@ class WP_Object_Cache {
 					return false;
 				}
 
-				$stored = $client->set( $storage_key, $payload, $options );
-				if ( true === $stored ) {
-					return true;
-				}
-				if ( (int) $client->exists( $storage_key ) > 0 ) {
-					return false;
-				}
+				return $this->retry_add( $client, $storage_key, $payload, $options );
 			}
 
 			if ( $only_if_present ) {
+				return false;
+			}
+
+			$this->disable_redis( new RuntimeException( 'Redis SET returned an unsuccessful response.' ) );
+			$scrubbed = $this->scrub_after_error_reply( $client, array( $storage_key ) );
+			return null;
+		} catch ( Throwable $throwable ) {
+			$this->disable_redis( $throwable );
+			if ( ! $only_if_absent ) {
+				$scrubbed = $this->scrub_after_error_reply( $client, array( $storage_key ) );
+			}
+			return null;
+		}
+	}
+
+	/**
+	 * Second and last SET NX attempt for a key that a first one found taken but
+	 * EXISTS then found gone: true when stored, false when taken, null otherwise.
+	 *
+	 * @param array<int|string, mixed> $options
+	 */
+	private function retry_add( Redis $client, string $storage_key, string $payload, array $options ): ?bool {
+		try {
+			if ( true === $client->set( $storage_key, $payload, $options ) ) {
+				return true;
+			}
+			if ( (int) $client->exists( $storage_key ) > 0 ) {
 				return false;
 			}
 
@@ -907,40 +1192,550 @@ class WP_Object_Cache {
 		}
 	}
 
+	/**
+	 * After Redis refused a write with an error reply, such as OOM, delete the
+	 * keys it was for. Redis accepts DEL even when out of memory, and with the
+	 * old copies gone nothing is left for the dirty marker to invalidate. False
+	 * when the write left no reply (the connection failed) or the DEL failed too.
+	 * Called once the write has already disabled Redis for this request.
+	 *
+	 * @param string[] $storage_keys
+	 */
+	private function scrub_after_error_reply( Redis $client, array $storage_keys ): bool {
+		try {
+			$reply = $client->getLastError();
+			if ( ! is_string( $reply ) || '' === $reply || array() === $storage_keys ) {
+				return false;
+			}
+
+			$client->clearLastError();
+			return is_int( $client->del( $storage_keys ) );
+		} catch ( Throwable $throwable ) {
+			// The DEL failed on its own: an error reply leaves the breaker alone,
+			// a lost connection trips it.
+			$this->remember_error( $throwable->getMessage() );
+			$this->redis->trip_breaker();
+			return false;
+		}
+	}
+
 	/** @return array{found: bool, value: mixed, ttl: int} */
 	private function read_redis( string $key, string $group ): array {
+		$miss = array( 'found' => false, 'value' => null, 'ttl' => $this->max_ttl );
+
+		// What get_multiple() read for this key; once Redis has failed, it reads nothing.
+		if ( isset( $this->prefetched[ $group ] ) && array_key_exists( $key, $this->prefetched[ $group ] ) ) {
+			$result = $this->prefetched[ $group ][ $key ];
+			unset( $this->prefetched[ $group ][ $key ] );
+			if ( array() === $this->prefetched[ $group ] ) {
+				unset( $this->prefetched[ $group ] );
+			}
+			if ( ! $this->redis_failed ) {
+				return $this->note_read( $key, $group, $result );
+			}
+		}
+
 		$client      = $this->client();
 		$storage_key = $this->storage_key( $key, $group );
 		if ( null === $client || null === $storage_key ) {
+			return $this->note_read( $key, $group, $miss );
+		}
+
+		// GET and TTL in one round trip: L1 keeps the entry no longer than Redis does.
+		$replies = $this->pipeline(
+			$client,
+			static function ( Redis $pipe ) use ( $storage_key ): void {
+				$pipe->get( $storage_key );
+				$pipe->ttl( $storage_key );
+			},
+			2
+		);
+		if ( null === $replies ) {
+			return $this->note_read( $key, $group, $miss );
+		}
+
+		$result = $this->redis_result( $replies[0], $replies[1] );
+		if ( null === $result ) {
+			try {
+				$client->del( $storage_key );
+			} catch ( Throwable $throwable ) {
+				$this->disable_redis( $throwable );
+			}
+			$result = $miss;
+		}
+
+		return $this->note_read( $key, $group, $result );
+	}
+
+	/**
+	 * A read_redis() result from a GET and a TTL reply, or null for a payload
+	 * that is not a valid SRC1 entry, which the caller deletes.
+	 *
+	 * @param mixed $payload
+	 * @param mixed $ttl
+	 * @return array{found: bool, value: mixed, ttl: int}|null
+	 */
+	private function redis_result( $payload, $ttl ): ?array {
+		if ( ! is_string( $payload ) ) {
 			return array( 'found' => false, 'value' => null, 'ttl' => $this->max_ttl );
+		}
+
+		$decoded = $this->decode( $payload );
+		if ( ! $decoded['valid'] ) {
+			return null;
+		}
+
+		return array(
+			'found' => true,
+			'value' => $decoded['value'],
+			'ttl'   => min( $this->max_ttl, max( 1, (int) $ttl ) ),
+		);
+	}
+
+	/**
+	 * Read in one round trip what get() would otherwise read from Redis key by
+	 * key: only keys it would look up there, not those served from L1 or that
+	 * this request may not read from Redis. Invalid payloads are deleted at once.
+	 *
+	 * @param array<int|string, mixed> $keys
+	 */
+	private function prefetch( array $keys, string $group, bool $force ): void {
+		$names = array();
+		foreach ( $keys as $key ) {
+			if ( ! $this->is_usable_key( $key ) ) {
+				continue;
+			}
+			$name = (string) $key;
+			if ( ! $this->can_read_persistent_key( $name, $group ) || ( ! $force && $this->runtime_exists( $name, $group ) ) ) {
+				continue;
+			}
+			$names[ $name ] = true;
+		}
+
+		// One key costs get() a single round trip already.
+		$storage_keys = count( $names ) < 2 ? null : $this->storage_keys( $group, self::by_name( $names ) );
+		$client       = null === $storage_keys ? null : $this->client();
+		$replies      = null === $client ? null : $this->pipeline(
+			$client,
+			static function ( Redis $pipe ) use ( $storage_keys ): void {
+				$pipe->mget( array_values( $storage_keys ) );
+				foreach ( $storage_keys as $storage_key ) {
+					$pipe->ttl( $storage_key );
+				}
+			},
+			1 + count( $storage_keys )
+		);
+		if ( null === $client || null === $replies || ! is_array( $replies[0] ) || count( $replies[0] ) !== count( $storage_keys ) ) {
+			return;
+		}
+
+		$payloads = array_values( $replies[0] );
+		$invalid  = array();
+		$position = 0;
+		foreach ( $storage_keys as $name => $storage_key ) {
+			$result = $this->redis_result( $payloads[ $position ], $replies[ $position + 1 ] );
+			if ( null === $result ) {
+				$invalid[] = $storage_key;
+				$result    = array( 'found' => false, 'value' => null, 'ttl' => $this->max_ttl );
+			}
+			$this->prefetched[ $group ][ $name ] = $result;
+			++$position;
+		}
+
+		if ( array() !== $invalid ) {
+			try {
+				$client->del( $invalid );
+			} catch ( Throwable $throwable ) {
+				$this->disable_redis( $throwable );
+			}
+		}
+	}
+
+	/**
+	 * Storage keys for several keys of one group, by the same index, reading any
+	 * generation they need first. Null when Redis is unavailable.
+	 *
+	 * @param array<int|string, int|string> $names
+	 * @return array<int|string, string>|null
+	 */
+	private function storage_keys( string $group, array $names ): ?array {
+		if ( null === $this->client() || ! $this->load_generations( array( $group ) ) ) {
+			return null;
+		}
+
+		$storage_keys = array();
+		foreach ( $names as $index => $name ) {
+			$storage_keys[ $index ] = (string) $this->storage_key( (string) $name, $group );
+		}
+		return $storage_keys;
+	}
+
+	/**
+	 * The keys of a name-keyed array, keyed by themselves, for storage_keys().
+	 *
+	 * @param array<int|string, mixed> $by_name
+	 * @return array<int|string, int|string>
+	 */
+	private static function by_name( array $by_name ): array {
+		$names = array_keys( $by_name );
+		return array_combine( $names, $names );
+	}
+
+	/**
+	 * Send what $queue adds as one pipeline: one round trip. The replies come
+	 * back in order; null after a failure, which, like any failed command, stops
+	 * this request from using Redis. An error reply such as OOM makes PhpRedis
+	 * throw for the whole pipeline once every reply is read, and leaves it in
+	 * getLastError(), so the breaker still tells it from a lost connection.
+	 *
+	 * @param callable(Redis): void $queue
+	 * @return array<int, mixed>|null
+	 */
+	private function pipeline( Redis $client, callable $queue, int $expected ): ?array {
+		try {
+			$client->clearLastError();
+			$client->multi( Redis::PIPELINE );
+			$queue( $client );
+			$replies = $client->exec();
+			if ( ! is_array( $replies ) || count( $replies ) !== $expected ) {
+				throw new RuntimeException( 'Redis returned an incomplete pipeline response.' );
+			}
+			return array_values( $replies );
+		} catch ( Throwable $throwable ) {
+			try {
+				// Commands queued before the failure must not reach the next call.
+				if ( Redis::PIPELINE === $client->getMode() ) {
+					$client->discard();
+				}
+			} catch ( Throwable $ignored ) {
+				// The connection reports its own failure on the next command.
+			}
+			$this->disable_redis( $throwable );
+			return null;
+		}
+	}
+
+	/**
+	 * SET, or DEL for a value that cannot be serialized (false), several keys of
+	 * one group in a single pipeline. Per key: true when stored, a DEL's answer,
+	 * or null when Redis did not take it, which leaves the cache dirty unless the
+	 * refused keys could at least be deleted (false).
+	 *
+	 * @param array<int|string, string|false> $payloads
+	 * @return array<int|string, bool|null>
+	 */
+	private function write_redis_many( string $group, array $payloads, int $ttl ): array {
+		$outcomes     = array_fill_keys( array_keys( $payloads ), null );
+		$storage_keys = array() === $payloads ? null : $this->storage_keys( $group, self::by_name( $payloads ) );
+		$client       = null === $storage_keys ? null : $this->client();
+		if ( null === $client ) {
+			return $outcomes;
+		}
+
+		$options = array( 'ex' => max( 1, $ttl ) );
+		$replies = $this->pipeline(
+			$client,
+			static function ( Redis $pipe ) use ( $payloads, $storage_keys, $options ): void {
+				foreach ( $payloads as $name => $payload ) {
+					if ( false === $payload ) {
+						$pipe->del( $storage_keys[ $name ] );
+					} else {
+						$pipe->set( $storage_keys[ $name ], $payload, $options );
+					}
+				}
+			},
+			count( $payloads )
+		);
+		if ( null === $replies ) {
+			// Which writes took effect is unknown; deleting them all leaves nothing stale.
+			$scrubbed = $this->scrub_after_error_reply( $client, array_values( $storage_keys ) );
+			return array_fill_keys( array_keys( $payloads ), $scrubbed ? false : null );
+		}
+
+		$refused  = array();
+		$position = 0;
+		foreach ( $payloads as $name => $payload ) {
+			$reply = $replies[ $position++ ];
+			if ( false === $payload ) {
+				$outcomes[ $name ] = (int) $reply > 0;
+			} elseif ( true === $reply ) {
+				$outcomes[ $name ] = true;
+			} else {
+				$refused[ $name ] = $storage_keys[ $name ];
+			}
+		}
+
+		if ( array() !== $refused ) {
+			// A plain SET fails only with an error reply; the other writes went through.
+			$this->disable_redis( new RuntimeException( 'Redis SET returned an unsuccessful response.' ) );
+			$scrubbed = $this->scrub_after_error_reply( $client, array_values( $refused ) );
+			foreach ( array_keys( $refused ) as $name ) {
+				$outcomes[ $name ] = $scrubbed ? false : null;
+			}
+		}
+
+		return $outcomes;
+	}
+
+	/**
+	 * SET NX for several keys of one group in one pipeline, then one EXISTS
+	 * pipeline for those refused, then add()'s single retry for any that
+	 * vanished meanwhile. Per key: true when stored, false when the key exists,
+	 * null when Redis is unavailable (add() then fails open).
+	 *
+	 * @param array<int|string, string> $payloads
+	 * @return array<int|string, bool|null>
+	 */
+	private function add_redis_many( string $group, array $payloads, int $ttl ): array {
+		$outcomes     = array_fill_keys( array_keys( $payloads ), null );
+		$storage_keys = array() === $payloads ? null : $this->storage_keys( $group, self::by_name( $payloads ) );
+		$client       = null === $storage_keys ? null : $this->client();
+		$options      = array( 'ex' => max( 1, $ttl ), 'nx' );
+		$replies      = null === $client ? null : $this->pipeline(
+			$client,
+			static function ( Redis $pipe ) use ( $payloads, $storage_keys, $options ): void {
+				foreach ( $payloads as $name => $payload ) {
+					$pipe->set( $storage_keys[ $name ], $payload, $options );
+				}
+			},
+			count( $payloads )
+		);
+		// A lost add() needs neither a dirty marker nor a scrub: see add().
+		if ( null === $client || null === $replies ) {
+			return $outcomes;
+		}
+
+		$refused  = array();
+		$position = 0;
+		foreach ( array_keys( $payloads ) as $name ) {
+			if ( true === $replies[ $position++ ] ) {
+				$outcomes[ $name ] = true;
+			} else {
+				$refused[ $name ] = $storage_keys[ $name ];
+			}
+		}
+		if ( array() === $refused ) {
+			return $outcomes;
+		}
+
+		$replies = $this->pipeline(
+			$client,
+			static function ( Redis $pipe ) use ( $refused ): void {
+				foreach ( $refused as $storage_key ) {
+					$pipe->exists( $storage_key );
+				}
+			},
+			count( $refused )
+		);
+		if ( null === $replies ) {
+			return $outcomes;
+		}
+
+		$position = 0;
+		foreach ( $refused as $name => $storage_key ) {
+			if ( (int) $replies[ $position++ ] > 0 ) {
+				$outcomes[ $name ] = false;
+			} elseif ( ! $this->redis_failed ) {
+				$outcomes[ $name ] = $this->retry_add( $client, $storage_key, $payloads[ $name ], $options );
+			}
+		}
+
+		return $outcomes;
+	}
+
+	/**
+	 * DEL several keys of one group in one pipeline, one command per key so each
+	 * gets its own answer: true when deleted, false when absent, null when Redis
+	 * is unavailable.
+	 *
+	 * @param array<int, string> $names
+	 * @return array<int, bool|null>
+	 */
+	private function delete_redis_many( string $group, array $names ): array {
+		$outcomes     = array_fill_keys( array_keys( $names ), null );
+		$storage_keys = array() === $names ? null : $this->storage_keys( $group, $names );
+		$client       = null === $storage_keys ? null : $this->client();
+		$replies      = null === $client ? null : $this->pipeline(
+			$client,
+			static function ( Redis $pipe ) use ( $storage_keys ): void {
+				foreach ( $storage_keys as $storage_key ) {
+					$pipe->del( $storage_key );
+				}
+			},
+			count( $storage_keys )
+		);
+		if ( null === $replies ) {
+			return $outcomes;
+		}
+
+		$position = 0;
+		foreach ( array_keys( $storage_keys ) as $index ) {
+			$outcomes[ $index ] = (int) $replies[ $position++ ] > 0;
+		}
+
+		return $outcomes;
+	}
+
+	/** Core's list of options known not to exist. */
+	private function is_notoptions( string $key, string $group ): bool {
+		return 'options' === $group && 'notoptions' === $key;
+	}
+
+	/**
+	 * Record the notoptions list L1 now holds in step with Redis: one this
+	 * request read, stored or deleted (null).
+	 *
+	 * @param mixed $value
+	 */
+	private function settle_notoptions( string $key, string $group, $value ): void {
+		if ( $this->is_notoptions( $key, $group ) ) {
+			$this->notoptions_base = is_array( $value ) ? $value : null;
+		}
+	}
+
+	/**
+	 * @param array{found: bool, value: mixed, ttl: int} $result
+	 * @return array{found: bool, value: mixed, ttl: int}
+	 */
+	private function note_read( string $key, string $group, array $result ): array {
+		$this->settle_notoptions( $key, $group, $result['found'] ? $result['value'] : null );
+		return $result;
+	}
+
+	/**
+	 * Write core's notoptions list as a three-way merge: the copy Redis holds now,
+	 * plus the entries this request added since it last synchronized the list,
+	 * minus those it removed. A plain write would put back whatever the request
+	 * read early on, so an option another request created meanwhile would stay
+	 * "missing" for every request until the entry expired (#11418).
+	 *
+	 * WATCH makes the read and the write one step, as incr() does. A request that
+	 * may read Redis keeps the merged list in L1; one that may not (wp-admin with
+	 * cache_wp_admin off) keeps its own and merges its next change from there.
+	 *
+	 * @param array<int|string, mixed> $ours
+	 * @param bool                     $scrubbed See store_redis().
+	 * @return bool|null As store_redis().
+	 */
+	private function store_notoptions( array $ours, int $ttl, bool &$scrubbed ): ?bool {
+		if ( false === $this->encode( $ours ) ) {
+			return false;
+		}
+
+		/*
+		 * An empty list from a request that never read or wrote the list is a reset —
+		 * what a plugin writes after inserting options behind the cache's back. A merge
+		 * would keep every entry, since this request saw none of them; dropping the
+		 * shared list instead only costs the queries that rebuild it. A request that
+		 * emptied a list it had (core removing its last entry) merges as usual.
+		 */
+		if ( array() === $ours && null === $this->notoptions_base ) {
+			$deleted = $this->delete_redis( 'notoptions', 'options' );
+			if ( null === $deleted ) {
+				return null;
+			}
+			$this->put_runtime( 'notoptions', 'options', array(), $ttl );
+			$this->notoptions_base = array();
+			return true;
+		}
+
+		$client      = $this->client();
+		$storage_key = $this->storage_key( 'notoptions', 'options' );
+		if ( null === $client || null === $storage_key ) {
+			return null;
+		}
+
+		$base = $this->notoptions_base ?? array();
+		for ( $attempt = 0; $attempt < 5; ++$attempt ) {
+			try {
+				$client->clearLastError();
+				if ( ! $client->watch( $storage_key ) ) {
+					throw new RuntimeException( 'Redis WATCH returned an unsuccessful response.' );
+				}
+
+				$theirs  = array();
+				$payload = $client->get( $storage_key );
+				if ( is_string( $payload ) ) {
+					$decoded = $this->decode( $payload );
+					if ( $decoded['valid'] && is_array( $decoded['value'] ) ) {
+						$theirs = $decoded['value'];
+					}
+				}
+
+				$merged  = self::merge_notoptions( $base, $ours, $theirs );
+				$encoded = $this->encode( $merged );
+				if ( false === $encoded ) {
+					$client->unwatch();
+					return false;
+				}
+
+				$client->multi();
+				$client->set( $storage_key, $encoded, array( 'ex' => max( 1, $ttl ) ) );
+				$transaction = $client->exec();
+				if ( false === $transaction ) {
+					// EXECABORT carries an error reply; a WATCH conflict carries none.
+					$reply = $client->getLastError();
+					if ( is_string( $reply ) && '' !== $reply ) {
+						throw new RuntimeException( $reply );
+					}
+					continue;
+				}
+				if ( ! is_array( $transaction ) || true !== ( $transaction[0] ?? false ) ) {
+					throw new RuntimeException( 'Redis notoptions transaction did not commit.' );
+				}
+
+				$settled = $this->can_read_persistent_key( 'notoptions', 'options' ) ? $merged : $ours;
+				$this->put_runtime( 'notoptions', 'options', $settled, $ttl );
+				$this->notoptions_base = $settled;
+				return true;
+			} catch ( Throwable $throwable ) {
+				try {
+					if ( Redis::MULTI === $client->getMode() ) {
+						$client->discard();
+					}
+					$client->unwatch();
+				} catch ( Throwable $ignored ) {
+					// The connection may already be closed.
+				}
+				$this->disable_redis( $throwable );
+				$scrubbed = $this->scrub_after_error_reply( $client, array( $storage_key ) );
+				return null;
+			}
 		}
 
 		try {
-			$payload = $client->get( $storage_key );
-			if ( false === $payload || ! is_string( $payload ) ) {
-				return array( 'found' => false, 'value' => null, 'ttl' => $this->max_ttl );
-			}
-
-			$decoded = $this->decode( $payload );
-			if ( ! $decoded['valid'] ) {
-				$client->del( $storage_key );
-				return array( 'found' => false, 'value' => null, 'ttl' => $this->max_ttl );
-			}
-
-			$ttl = (int) $client->ttl( $storage_key );
-			if ( $ttl < 1 ) {
-				$ttl = 1;
-			}
-
-			return array(
-				'found' => true,
-				'value' => $decoded['value'],
-				'ttl'   => min( $this->max_ttl, $ttl ),
-			);
-		} catch ( Throwable $throwable ) {
-			$this->disable_redis( $throwable );
-			return array( 'found' => false, 'value' => null, 'ttl' => $this->max_ttl );
+			$client->unwatch();
+		} catch ( Throwable $ignored ) {
+			// EXEC already clears WATCH in the normal contention path.
 		}
+
+		// Still contended after five tries: drop the shared list rather than guess.
+		// It is only a shortcut; the next request rebuilds it from the database.
+		$this->notoptions_base = $ours;
+		return null === $this->delete_redis( 'notoptions', 'options' ) ? null : true;
+	}
+
+	/**
+	 * $theirs, plus every entry $ours added or changed relative to $base, minus
+	 * every entry $ours dropped from it.
+	 *
+	 * @param array<int|string, mixed> $base
+	 * @param array<int|string, mixed> $ours
+	 * @param array<int|string, mixed> $theirs
+	 * @return array<int|string, mixed>
+	 */
+	private static function merge_notoptions( array $base, array $ours, array $theirs ): array {
+		foreach ( $ours as $name => $flag ) {
+			if ( ! array_key_exists( $name, $base ) || $base[ $name ] !== $flag ) {
+				$theirs[ $name ] = $flag;
+			}
+		}
+		foreach ( array_keys( $base ) as $name ) {
+			if ( ! array_key_exists( $name, $ours ) ) {
+				unset( $theirs[ $name ] );
+			}
+		}
+		return $theirs;
 	}
 
 	private function delete_redis( string $key, string $group ): ?bool {
@@ -999,8 +1794,8 @@ class WP_Object_Cache {
 			}
 
 			if ( 'success' === $redis_result['status'] ) {
-				$value = (int) $redis_result['value'];
-				$ttl   = (int) $redis_result['ttl'];
+				$value = $redis_result['value'];
+				$ttl   = $redis_result['ttl'];
 				$this->put_runtime( $key, $group, $value, $ttl );
 				if ( $this->uses_db_fallback( $group ) ) {
 					$this->write_db_transient( $key, $group, $value, $ttl );
@@ -1022,12 +1817,59 @@ class WP_Object_Cache {
 			return false;
 		}
 
-		$value = is_numeric( $value ) ? (int) $value : 0;
-		$value = max( 0, $value + $change );
+		$value = self::changed_number( $value, $change );
 		$ttl   = $this->remaining_runtime_ttl( $key, $group );
 
 		$this->set( $key, $value, $group, $ttl );
 		return $value;
+	}
+
+	/**
+	 * The value incr()/decr() store and return: the old value as an integer (0
+	 * when it is not numeric), changed, never below zero and never above
+	 * PHP_INT_MAX. Core's runtime cache lets an overflowing counter turn into a
+	 * float; a counter here stops at PHP_INT_MAX instead, so what Redis holds,
+	 * what L1 holds and what the call returns are always the same integer, and
+	 * no float is ever cast to int (PHP 8.5 warns when it does not fit).
+	 *
+	 * @param mixed $value
+	 */
+	private static function changed_number( $value, int $change ): int {
+		$value = is_numeric( $value ) ? self::int_value( $value ) : 0;
+
+		if ( $change > 0 && $value > PHP_INT_MAX - $change ) {
+			return PHP_INT_MAX;
+		}
+		if ( $change < 0 && $value < PHP_INT_MIN - $change ) {
+			return 0;
+		}
+
+		return max( 0, $value + $change );
+	}
+
+	/**
+	 * (int) $number, except that a float outside the integer range saturates to
+	 * PHP_INT_MAX or PHP_INT_MIN and NAN becomes 0: PHP 8.5 warns about those
+	 * casts, and earlier versions return an arbitrary value. Numeric strings
+	 * already saturate when cast.
+	 *
+	 * @param mixed $number
+	 */
+	private static function int_value( $number ): int {
+		if ( ! is_float( $number ) ) {
+			return (int) $number;
+		}
+		if ( is_nan( $number ) ) {
+			return 0;
+		}
+		// (float) PHP_INT_MAX rounds up to 2^63, which is already out of range.
+		if ( $number >= (float) PHP_INT_MAX ) {
+			return PHP_INT_MAX;
+		}
+		if ( $number < (float) PHP_INT_MIN ) {
+			return PHP_INT_MIN;
+		}
+		return (int) $number;
 	}
 
 	/**
@@ -1078,8 +1920,7 @@ class WP_Object_Cache {
 					$pttl = min( $this->max_ttl * 1000, max( 1, $pttl ) );
 				}
 
-				$value   = is_numeric( $decoded['value'] ) ? (int) $decoded['value'] : 0;
-				$value   = max( 0, $value + $change );
+				$value   = self::changed_number( $decoded['value'], $change );
 				$encoded = $this->encode( $value );
 				if ( false === $encoded ) {
 					$client->unwatch();
@@ -1220,6 +2061,7 @@ class WP_Object_Cache {
 		 */
 		if ( $invalidate_options ) {
 			unset( $this->cache['options'], $this->expirations['options'] );
+			$this->notoptions_base = null;
 			if ( $this->object_enabled && ! $this->bump_group_generation( 'options' ) ) {
 				return false;
 			}
